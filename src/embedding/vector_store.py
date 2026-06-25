@@ -6,6 +6,8 @@ from qdrant_client.models import (
     Distance,
     FieldCondition,
     Filter,
+    FilterSelector,
+    MatchAny,
     MatchValue,
     PayloadSchemaType,
     PointStruct,
@@ -18,7 +20,7 @@ _BATCH_SIZE = 100
 
 
 class QdrantVectorStore:
-    def __init__(self, collection_name: str = "indigo_kb") -> None:
+    def __init__(self, collection_name: str = "airline_kb") -> None:
         url = os.environ.get("QDRANT_URL")
         api_key = os.environ.get("QDRANT_API_KEY")
         if not url:
@@ -54,6 +56,11 @@ class QdrantVectorStore:
             field_name="category",
             field_schema=PayloadSchemaType.KEYWORD,
         )
+        self.client.create_payload_index(
+            collection_name=collection_name,
+            field_name="airline",
+            field_schema=PayloadSchemaType.KEYWORD,
+        )
 
     def upsert(self, chunks: list[dict]) -> None:
         total = len(chunks)
@@ -80,14 +87,17 @@ class QdrantVectorStore:
         query_vector: list[float],
         top_k: int = 5,
         filters: dict | None = None,
+        airline_filter: list[str] | None = None,
     ) -> list[dict]:
-        qdrant_filter = None
+        must = []
         if filters:
-            must = [
+            must.extend(
                 FieldCondition(key=k, match=MatchValue(value=v))
                 for k, v in filters.items()
-            ]
-            qdrant_filter = Filter(must=must)
+            )
+        if airline_filter:
+            must.append(FieldCondition(key="airline", match=MatchAny(any=airline_filter)))
+        qdrant_filter = Filter(must=must) if must else None
 
         response = self.client.query_points(
             collection_name=self.collection_name,
@@ -120,10 +130,29 @@ class QdrantVectorStore:
             collection_name=self.collection_name,
             vectors_config=VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE),
         )
+        self.client.create_payload_index(
+            collection_name=self.collection_name,
+            field_name="category",
+            field_schema=PayloadSchemaType.KEYWORD,
+        )
+        self.client.create_payload_index(
+            collection_name=self.collection_name,
+            field_name="airline",
+            field_schema=PayloadSchemaType.KEYWORD,
+        )
         print(
             f"[vector_store] Recreated collection '{self.collection_name}' "
             f"(dim={EMBEDDING_DIM})."
         )
+
+    def delete_by_airline(self, airline: str) -> None:
+        self.client.delete(
+            collection_name=self.collection_name,
+            points_selector=FilterSelector(
+                filter=Filter(must=[FieldCondition(key="airline", match=MatchValue(value=airline))])
+            ),
+        )
+        print(f"[vector_store] Deleted all points for airline='{airline}'.")
 
     def stats(self) -> dict:
         info = self.client.get_collection(self.collection_name)

@@ -36,7 +36,7 @@ done
 
 echo ""
 echo -e "${BOLD}╔══════════════════════════════════════════════╗${NC}"
-echo -e "${BOLD}║   ✈️  ISHA — IndiGo Smart Helpdesk Assistant  ║${NC}"
+echo -e "${BOLD}║  ✈️  ISHA — Indian Airlines Helpdesk Assistant ║${NC}"
 echo -e "${BOLD}║         Local Development Launcher            ║${NC}"
 echo -e "${BOLD}╚══════════════════════════════════════════════╝${NC}"
 echo ""
@@ -44,7 +44,12 @@ echo ""
 # ── 1. working directory ──────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
-info "Working directory: $SCRIPT_DIR"
+
+# ── log file setup ────────────────────────────────────────────────────────────
+LOG_DIR="$SCRIPT_DIR/logs"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/isha-$(date +%Y%m%d-%H%M%S).log"
+info "Logs → $LOG_FILE"
 
 # ── 2. check uv ───────────────────────────────────────────────────────────────
 if ! command -v uv &>/dev/null; then
@@ -89,27 +94,24 @@ fi
 
 # ── 5. install / sync deps ────────────────────────────────────────────────────
 info "Syncing dependencies..."
-uv sync --quiet
+uv sync --quiet >> "$LOG_FILE" 2>&1
 ok "Dependencies up to date"
 
 # ── 6. Qdrant data check / ingest ─────────────────────────────────────────────
 if [[ "$RESET" == true ]]; then
   info "Re-ingesting documents (--reset)..."
-  uv run python scripts/ingest.py --reset --verify
+  uv run python scripts/ingest.py --reset --verify >> "$LOG_FILE" 2>&1
   ok "Ingestion complete"
 elif [[ "$SKIP_VERIFY" == false ]]; then
   info "Verifying Qdrant data..."
   VERIFY_OUT=$(uv run python scripts/ingest.py --verify 2>&1)
+  echo "$VERIFY_OUT" >> "$LOG_FILE"
   if echo "$VERIFY_OUT" | grep -q "no results\|Error\|error\|Exception"; then
-    err "Qdrant verification failed:"
-    echo "$VERIFY_OUT"
-    echo ""
+    err "Qdrant verification failed — see $LOG_FILE"
     warn "Run with --reset to ingest: ./start.sh --reset"
     exit 1
   fi
-  # Extract vector count if present
-  COUNT=$(echo "$VERIFY_OUT" | grep -oE '[0-9]+ vectors' | head -1 || true)
-  ok "Qdrant ready${COUNT:+ — $COUNT loaded}"
+  ok "Qdrant ready"
 else
   warn "Skipping Qdrant verify (--skip-verify)"
 fi
@@ -125,22 +127,25 @@ fi
 echo ""
 ok "All checks passed — launching Streamlit on port $PORT"
 echo -e "${BOLD}  Local URL:  http://localhost:${PORT}${NC}"
+echo -e "${CYAN}  Logs:       $LOG_FILE${NC}"
 echo ""
-
-# Trap Ctrl+C for clean shutdown
-cleanup() {
-  echo ""
-  info "Shutting down ISHA..."
-  kill "$STREAMLIT_PID" 2>/dev/null || true
-  echo -e "${GREEN}Goodbye.${NC}"
-  exit 0
-}
-trap cleanup INT TERM
 
 uv run streamlit run app.py \
   --server.port "$PORT" \
-  --server.headless false \
-  --browser.gatherUsageStats false &
+  --server.headless true \
+  --browser.gatherUsageStats false \
+  >> "$LOG_FILE" 2>&1 &
 STREAMLIT_PID=$!
 
-wait "$STREAMLIT_PID"
+echo "$STREAMLIT_PID" > "$LOG_DIR/streamlit.pid"
+
+# brief wait to catch immediate crash
+sleep 2
+if ! kill -0 "$STREAMLIT_PID" 2>/dev/null; then
+  err "Streamlit failed to start — see $LOG_FILE"
+  exit 1
+fi
+
+ok "Streamlit running (PID $STREAMLIT_PID)"
+echo ""
+info "To stop: ./stop.sh  or  kill $STREAMLIT_PID"

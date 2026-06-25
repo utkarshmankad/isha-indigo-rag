@@ -8,20 +8,26 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from data.indigo_documents import DOCUMENTS
+from data.indigo_documents import DOCUMENTS as INDIGO_DOCS
+from data.air_india_documents import DOCUMENTS as AI_DOCS
+from data.spicejet_documents import DOCUMENTS as SJ_DOCS
+from data.dgca_documents import DOCUMENTS as DGCA_DOCS
 from src.embedding.embedder import embed_batch, embed_chunks
 from src.embedding.vector_store import QdrantVectorStore
 from src.ingestion.chunker import ingest_all
 
+ALL_DOCUMENTS = INDIGO_DOCS + AI_DOCS + SJ_DOCS + DGCA_DOCS
+
 VERIFY_QUERIES = [
     "What is the carry-on baggage weight limit?",
-    "How do I redeem BluChip points?",
-    "What happens if my flight is delayed?",
+    "How do I redeem Flying Returns miles on Air India?",
+    "What happens if my flight is delayed under DGCA rules?",
+    "What is SpiceJet SpiceFlex fare?",
 ]
 
 
 def run_verify(store: QdrantVectorStore) -> None:
-    print("\n[verify] Running 3 test queries...")
+    print(f"\n[verify] Running {len(VERIFY_QUERIES)} test queries...")
     for q in VERIFY_QUERIES:
         vec = embed_batch([q])[0]
         results = store.query(vec, top_k=1)
@@ -34,10 +40,26 @@ def run_verify(store: QdrantVectorStore) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Ingest Indigo documents into Qdrant.")
+    parser = argparse.ArgumentParser(description="Ingest all airline documents into Qdrant.")
     parser.add_argument("--reset", action="store_true", help="Delete and recreate collection before ingesting.")
-    parser.add_argument("--verify", action="store_true", help="Run 3 test queries after ingestion.")
+    parser.add_argument("--verify", action="store_true", help="Run test queries after ingestion.")
+    parser.add_argument(
+        "--airline",
+        choices=["all", "indigo", "air_india", "spicejet", "dgca"],
+        default="all",
+        help="Ingest only a specific airline's documents (default: all).",
+    )
     args = parser.parse_args()
+
+    airline_map = {
+        "all": ALL_DOCUMENTS,
+        "indigo": INDIGO_DOCS,
+        "air_india": AI_DOCS,
+        "spicejet": SJ_DOCS,
+        "dgca": DGCA_DOCS,
+    }
+    docs_to_ingest = airline_map[args.airline]
+    print(f"[ingest] Airline filter: {args.airline} ({len(docs_to_ingest)} documents)")
 
     store = QdrantVectorStore()
 
@@ -51,9 +73,15 @@ def main() -> None:
             return
 
     if args.reset:
-        store.recreate_collection()
+        if args.airline == "all":
+            store.recreate_collection()
+        else:
+            # Partial reset: delete only the targeted airline's points so
+            # other airlines' data is preserved.
+            print(f"[ingest] Partial reset: deleting existing vectors for airline='{args.airline}'")
+            store.delete_by_airline(args.airline)
 
-    chunks = ingest_all(DOCUMENTS)
+    chunks = ingest_all(docs_to_ingest)
     embedded = embed_chunks(chunks)
     store.upsert(embedded)
     print(store.stats())

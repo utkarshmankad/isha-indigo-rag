@@ -3,7 +3,7 @@ TOOL_REGISTRY: dict[str, dict] = {
         "keywords": [
             "baggage", "luggage", "carry-on", "cabin bag", "checked bag",
             "allowance", "kg", "kilo", "excess baggage", "overweight",
-            "pir", "oversized", "hand baggage",
+            "pir", "oversized", "hand baggage", "checked luggage",
         ],
         "description": "Carry-on and checked baggage allowances, excess fees, and lost/damaged baggage (PIR).",
     },
@@ -17,19 +17,19 @@ TOOL_REGISTRY: dict[str, dict] = {
     },
     "fares_and_ticketing": {
         "keywords": [
-            "fare", "ticket", "6e prime", "flexi", "super6e",
-            "booking", "upgrade", "name change", "pnr", "itinerary",
-            "reschedule", "fare class",
+            "fare", "ticket", "flexi", "booking", "upgrade",
+            "name change", "pnr", "itinerary", "reschedule", "fare class",
+            "spiceflex", "spicemax", "6e prime", "economy", "business class",
         ],
-        "description": "Fare types (6E Prime, Flexi), ticket booking, name changes, and upgrades.",
+        "description": "Fare types, ticket booking, name changes, upgrades, and schedule changes.",
     },
     "cancellations_and_refunds": {
         "keywords": [
             "refund", "cancel", "cancellation", "credit shell",
             "no-show", "waiver", "penalty", "voucher", "reimburse",
-            "partial refund", "full refund",
+            "partial refund", "full refund", "credit note",
         ],
-        "description": "Ticket cancellation policies, refund timelines, and credit shell rules.",
+        "description": "Ticket cancellation policies, refund timelines, and credit shell/voucher rules.",
     },
     "flight_delays_and_cancellations": {
         "keywords": [
@@ -39,13 +39,14 @@ TOOL_REGISTRY: dict[str, dict] = {
         ],
         "description": "DGCA passenger rights, compensation, and rebooking for delayed or cancelled flights.",
     },
-    "loyalty_bluchip": {
+    "loyalty": {
         "keywords": [
-            "bluchip", "blu chip", "tier", "gold member", "platinum member",
+            "loyalty", "frequent flyer", "tier", "gold member", "platinum member",
             "points", "earn points", "redeem points", "lounge access",
-            "priority boarding", "status", "6e rewards", "loyalty",
+            "priority boarding", "status", "miles", "flying returns",
+            "bluchip", "blu chip", "spiceclub", "6e rewards",
         ],
-        "description": "BluChip loyalty programme — tiers, points earning/redemption, and member benefits.",
+        "description": "Loyalty programmes — Flying Returns, BluChip, SpiceClub — tiers, points, and benefits.",
     },
     "special_assistance": {
         "keywords": [
@@ -55,13 +56,13 @@ TOOL_REGISTRY: dict[str, dict] = {
         ],
         "description": "Wheelchair (WCHR/WCHS/WCHC), medical equipment, unaccompanied minors, and accessibility.",
     },
-    "6e_addons_and_services": {
+    "ancillary_services": {
         "keywords": [
-            "add-on", "6e add", "meal", "snack", "xl seat",
-            "fast forward", "comfort kit", "extra legroom", "pre-order",
-            "in-flight service", "add on", "seat upgrade",
+            "add-on", "meal", "snack", "xl seat", "extra legroom",
+            "pre-order", "in-flight service", "seat upgrade", "priority",
+            "fast forward", "comfort kit", "spicemax", "6e add",
         ],
-        "description": "Optional add-ons: meals, seat upgrades, Fast Forward, and in-flight services.",
+        "description": "Optional add-ons: meals, seat upgrades, priority services, and in-flight services.",
     },
     "international_travel": {
         "keywords": [

@@ -1,8 +1,13 @@
+import hashlib
+import json
+import os
+import pickle
 import re
 
 import bm25s
 
 RRF_K = 60
+_BM25_CACHE_ROOT = ".bm25_cache"
 
 
 def _tokenize(text: str) -> list[str]:
@@ -14,12 +19,52 @@ class BM25Index:
         self._index: bm25s.BM25 | None = None
         self._chunks: list[dict] = []
 
+    @property
+    def corpus_size(self) -> int:
+        return len(self._chunks)
+
     def build(self, chunks: list[dict]) -> None:
         self._chunks = chunks
         corpus_tokens = [_tokenize(c["text"]) for c in chunks]
         self._index = bm25s.BM25()
         self._index.index(corpus_tokens)
         print(f"[BM25] Indexed {len(chunks)} chunks.")
+
+    def save(self, cache_dir: str) -> None:
+        os.makedirs(cache_dir, exist_ok=True)
+        with open(os.path.join(cache_dir, "bm25.pkl"), "wb") as f:
+            pickle.dump(self._index, f)
+        with open(os.path.join(cache_dir, "chunks.pkl"), "wb") as f:
+            pickle.dump(self._chunks, f)
+        print(f"[BM25] Saved index to {cache_dir}.")
+
+    def load(self, cache_dir: str) -> bool:
+        bm25_path = os.path.join(cache_dir, "bm25.pkl")
+        chunks_path = os.path.join(cache_dir, "chunks.pkl")
+        if not (os.path.exists(bm25_path) and os.path.exists(chunks_path)):
+            return False
+        try:
+            with open(bm25_path, "rb") as f:
+                self._index = pickle.load(f)
+            with open(chunks_path, "rb") as f:
+                self._chunks = pickle.load(f)
+            print(f"[BM25] Loaded index from cache ({len(self._chunks)} chunks).")
+            return True
+        except Exception:
+            return False
+
+    @classmethod
+    def build_or_load(cls, chunks: list[dict], cache_root: str = _BM25_CACHE_ROOT) -> "BM25Index":
+        key = hashlib.sha256(
+            json.dumps([c["chunk_id"] for c in chunks]).encode()
+        ).hexdigest()[:16]
+        cache_dir = os.path.join(cache_root, key)
+        idx = cls()
+        if idx.load(cache_dir):
+            return idx
+        idx.build(chunks)
+        idx.save(cache_dir)
+        return idx
 
     def search(self, query: str, top_k: int = 10) -> list[dict]:
         if self._index is None:
@@ -79,17 +124,28 @@ def hybrid_search(
     vector_store,
     top_k: int = 5,
     filters: dict | None = None,
+    airline_filter: list[str] | None = None,
 ) -> list[dict]:
     fetch_k = top_k * 2
+    # When post-filtering by category/airline, fetch the full corpus so that
+    # low-volume categories aren't starved before RRF.
+    bm25_fetch_k = bm25_index.corpus_size if (filters or airline_filter) else fetch_k
 
-    bm25_results = bm25_index.search(query, top_k=fetch_k)
+    bm25_results = bm25_index.search(query, top_k=bm25_fetch_k)
     if filters:
         bm25_results = [
             r for r in bm25_results
             if all(r["metadata"].get(k) == v for k, v in filters.items())
         ]
+    if airline_filter:
+        bm25_results = [
+            r for r in bm25_results
+            if r["metadata"].get("airline") in airline_filter
+        ]
 
-    vector_results = vector_store.query(query_vector, top_k=fetch_k, filters=filters)
+    vector_results = vector_store.query(
+        query_vector, top_k=fetch_k, filters=filters, airline_filter=airline_filter
+    )
 
     fused = reciprocal_rank_fusion(bm25_results, vector_results, top_k=top_k)
 

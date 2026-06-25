@@ -102,7 +102,8 @@ def split_into_chunks(text: str, chunk_size: int, overlap: int) -> list[str]:
     for i in range(1, len(chunks)):
         prev = chunks[i - 1]
         tail = prev[-overlap:].lstrip() if len(prev) > overlap else prev
-        overlapped.append(tail + chunks[i])
+        combined = (tail + chunks[i])[:chunk_size + overlap]
+        overlapped.append(combined)
 
     return [c for c in overlapped if len(c) >= MIN_CHUNK_SIZE]
 
@@ -123,6 +124,7 @@ def chunk_document(doc: dict) -> list[dict]:
             'metadata': {
                 'title': doc['title'],
                 'category': doc['category'],
+                'airline': doc.get('airline', 'indigo'),
                 'department': doc['department'],
                 'doc_type': doc['doc_type'],
                 'last_updated': doc['last_updated'],

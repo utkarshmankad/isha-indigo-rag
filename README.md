@@ -1,6 +1,6 @@
 # ISHA — IndiGo Smart Helpdesk Assistant
 
-A RAG-based virtual assistant for IndiGo Airlines passenger queries. Built with LangGraph, Qdrant, BM25 hybrid search, and Claude/OpenAI for answer generation.
+A RAG-based virtual assistant for IndiGo Airlines passenger queries. Built with LangGraph, Qdrant, BM25 hybrid search, and OpenAI for answer generation.
 
 ## Architecture
 
@@ -9,7 +9,7 @@ User query
   → Tool selector (keyword routing + DGCA force-include)
   → Hybrid retrieval (BM25 + Qdrant vector, RRF fusion)
   → Confidence gate (re-retrieval if < 0.65)
-  → LLM answer (Anthropic claude-opus-4-8 → OpenAI gpt-4o-mini fallback)
+  → LLM answer (OpenAI gpt-4o-mini)
   → Structured logging (logs/query_log.jsonl)
 ```
 
@@ -36,8 +36,7 @@ streamlit run app.py
 
 | Variable | Description |
 |---|---|
-| `OPENAI_API_KEY` | For embeddings (text-embedding-3-small) |
-| `ANTHROPIC_API_KEY` | For answer generation (claude-opus-4-8) |
+| `OPENAI_API_KEY` | For embeddings (text-embedding-3-small) and answer generation (gpt-4o-mini) |
 | `QDRANT_URL` | Qdrant Cloud cluster URL |
 | `QDRANT_API_KEY` | Qdrant Cloud API key |
 
@@ -54,7 +53,6 @@ streamlit run app.py
 3. **Advanced settings → Secrets** — paste your real credentials:
    ```toml
    OPENAI_API_KEY = "sk-..."
-   ANTHROPIC_API_KEY = "sk-ant-..."
    QDRANT_URL = "https://your-cluster.cloud.qdrant.io"
    QDRANT_API_KEY = "your-qdrant-key"
    ```
@@ -76,7 +74,7 @@ streamlit run app.py
 | Streamlit Community Cloud | $0 |
 | OpenAI embeddings (ingestion, one-time) | ~$0.001 |
 | OpenAI embeddings (per query) | ~$0.0000004 |
-| Claude Opus 4.8 (per answer) | ~$0.002/query |
+| OpenAI gpt-4o-mini (per answer) | ~$0.002/query |
 | Est. 500 demo queries/month | ~$1–3/month |
 
 ## Observability

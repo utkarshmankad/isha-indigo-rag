@@ -533,7 +533,7 @@ DOCUMENTS = [
     {
         "id": "LYL-001",
         "title": "BluChip Programme — Tier Structure and Benefits",
-        "category": "loyalty_bluchip",
+        "category": "loyalty",
         "department": "Loyalty and Partnerships",
         "doc_type": "policy",
         "last_updated": "2024-11-10",
@@ -567,7 +567,7 @@ DOCUMENTS = [
     {
         "id": "LYL-002",
         "title": "6E Rewards Points Earning and Redemption",
-        "category": "loyalty_bluchip",
+        "category": "loyalty",
         "department": "Loyalty and Partnerships",
         "doc_type": "policy",
         "last_updated": "2024-10-25",
@@ -603,7 +603,7 @@ DOCUMENTS = [
     {
         "id": "LYL-003",
         "title": "BluChip Co-branded Credit Card and Partner Benefits",
-        "category": "loyalty_bluchip",
+        "category": "loyalty",
         "department": "Loyalty and Partnerships",
         "doc_type": "policy",
         "last_updated": "2024-08-05",
@@ -743,7 +743,7 @@ DOCUMENTS = [
     {
         "id": "ADD-001",
         "title": "6E Add-ons Pricing — Meals, Seats, and Fast Forward",
-        "category": "6e_addons_and_services",
+        "category": "ancillary_services",
         "department": "Ancillary Revenue",
         "doc_type": "fee_schedule",
         "last_updated": "2024-11-12",
@@ -778,7 +778,7 @@ DOCUMENTS = [
     {
         "id": "ADD-002",
         "title": "In-Flight Meal Policy and Complimentary Service Entitlements",
-        "category": "6e_addons_and_services",
+        "category": "ancillary_services",
         "department": "In-Flight Services",
         "doc_type": "policy",
         "last_updated": "2024-10-05",
@@ -812,7 +812,7 @@ DOCUMENTS = [
     {
         "id": "ADD-003",
         "title": "6E Connect Codeshare Programme",
-        "category": "6e_addons_and_services",
+        "category": "ancillary_services",
         "department": "Network and Alliances",
         "doc_type": "policy",
         "last_updated": "2024-09-28",

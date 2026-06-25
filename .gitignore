@@ -7,3 +7,5 @@ logs/
 .streamlit/secrets.toml
 *_api_key.txt
 *.key
+.bm25_cache/
+.pytest_cache/

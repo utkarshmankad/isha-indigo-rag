@@ -50,7 +50,8 @@ def read_logs(n: int = 50) -> list[dict]:
     p = Path(LOG_FILE)
     if not p.exists():
         return []
-    lines = p.read_text(encoding="utf-8").splitlines()
+    with _lock:
+        lines = p.read_text(encoding="utf-8").splitlines()
     entries = []
     for line in lines:
         line = line.strip()

@@ -29,6 +29,7 @@ DGCA_INSTRUCTION = (
 
 class AgentState(TypedDict):
     query: str
+    airline: str
     selected_tools: list[str]
     retrieved_chunks: list[dict]
     context: str
@@ -40,56 +41,33 @@ class AgentState(TypedDict):
 
 
 def generate_answer(prompt: str) -> str:
-    """Try Anthropic claude-opus-4-8 (adaptive thinking), fall back to OpenAI gpt-4o-mini."""
+    """Generate answer using OpenAI gpt-4o-mini."""
     def split_prompt(p: str) -> tuple[str, str]:
         if "\n\nUSER QUESTION: " in p:
             sys, usr = p.split("\n\nUSER QUESTION: ", 1)
             return sys, usr
         return p, ""
 
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
-    if anthropic_key:
-        try:
-            import anthropic
-            client = anthropic.Anthropic(api_key=anthropic_key)
-            system_part, user_part = split_prompt(prompt)
-            response = client.messages.create(
-                model="claude-opus-4-8",
-                max_tokens=1024,
-                thinking={"type": "adaptive"},
-                system=system_part,
-                messages=[{"role": "user", "content": user_part}],
-            )
-            for block in response.content:
-                if block.type == "text":
-                    return block.text
-        except Exception as e:
-            print(f"[generate] Anthropic error: {e} — falling back to OpenAI")
-
     openai_key = os.environ.get("OPENAI_API_KEY")
-    if openai_key:
-        try:
-            from openai import OpenAI
-            client = OpenAI(api_key=openai_key)
-            system_part, user_part = split_prompt(prompt)
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": system_part},
-                    {"role": "user", "content": user_part},
-                ],
-                max_tokens=1024,
-            )
-            return response.choices[0].message.content or ""
-        except Exception as e:
-            print(f"[generate] OpenAI error: {e}")
+    if not openai_key:
+        return "Error: OPENAI_API_KEY not configured."
 
-    return "Error: no LLM API keys configured."
+    from openai import OpenAI
+    client = OpenAI(api_key=openai_key)
+    system_part, user_part = split_prompt(prompt)
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": system_part},
+            {"role": "user", "content": user_part},
+        ],
+        max_tokens=1024,
+    )
+    return response.choices[0].message.content or ""
 
 
 def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
-    bm25_index = BM25Index()
-    bm25_index.build(chunks)
+    bm25_index = BM25Index.build_or_load(chunks)
     engine = RetrievalEngine(vector_store)
 
     def select_tools_node(state: AgentState) -> dict:
@@ -120,6 +98,7 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
             "context": "",
             "answer": "",
             "confidence": 0.0,
+            "airline": state.get("airline", "all"),
         }
 
     def retrieve_node(state: AgentState) -> dict:
@@ -127,20 +106,27 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
         iterations = state["iterations"] + 1
         search_all = state["search_all"]
         selected_tools = state["selected_tools"]
+        airline = state.get("airline", "all")
 
-        print(f"\n[retrieve] iteration={iterations}, search_all={search_all}")
+        # When a specific airline is selected, always include DGCA docs for regulatory context
+        airline_filter = None if airline == "all" else [airline, "dgca"]
+
+        print(f"\n[retrieve] iteration={iterations}, search_all={search_all}, airline={airline}")
 
         qvec = embed_batch([query])[0]
 
-        # Confidence from unfiltered cosine similarity — global KB coverage check
-        conf_results = vector_store.query(qvec, top_k=3)
+        # Confidence from cosine similarity, scoped to airline if selected
+        conf_results = vector_store.query(qvec, top_k=3, airline_filter=airline_filter)
         confidence = max((r["score"] for r in conf_results), default=0.0)
-        print(f"[retrieve] confidence (max cosine, unfiltered)={confidence:.4f}")
+        print(f"[retrieve] confidence (max cosine)={confidence:.4f}")
 
         # Hybrid search: per-tool filtered or global
         all_chunks: dict[str, dict] = {}
         if search_all:
-            results = hybrid_search(query, qvec, bm25_index, vector_store, top_k=10)
+            results = hybrid_search(
+                query, qvec, bm25_index, vector_store, top_k=10,
+                airline_filter=airline_filter,
+            )
             for r in results:
                 all_chunks[r["chunk_id"]] = r
         else:
@@ -148,6 +134,7 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
                 results = hybrid_search(
                     query, qvec, bm25_index, vector_store,
                     top_k=5, filters={"category": tool},
+                    airline_filter=airline_filter,
                 )
                 for r in results:
                     all_chunks[r["chunk_id"]] = r
@@ -179,8 +166,9 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
 
         print(f"\n[generate] building answer (dgca_query={dgca_query})")
 
+        airline = state.get("airline", "all")
         context = engine.build_context(chunks)
-        prompt = engine.build_prompt(query, context)
+        prompt = engine.build_prompt(query, context, airline=airline)
         if dgca_query:
             prompt = prompt + DGCA_INSTRUCTION
 
@@ -230,13 +218,14 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
     return workflow.compile()
 
 
-def run_agent(query: str, graph) -> AgentState:
+def run_agent(query: str, graph, airline: str = "all") -> AgentState:
     print(f"\n{'='*70}")
-    print(f"QUERY: {query}")
+    print(f"QUERY: {query} [airline={airline}]")
     print("=" * 70)
 
     initial_state: AgentState = {
         "query": query,
+        "airline": airline,
         "selected_tools": [],
         "retrieved_chunks": [],
         "context": "",

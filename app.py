@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 st.set_page_config(
-    page_title="ISHA — IndiGo Smart Helpdesk Assistant",
+    page_title="ISHA — Indian Airlines Smart Helpdesk Assistant",
     page_icon="✈️",
     layout="wide",
 )
@@ -33,27 +33,55 @@ CATEGORY_EMOJI: dict[str, str] = {
     "fares_and_ticketing": "💰",
     "cancellations_and_refunds": "↩️",
     "flight_delays_and_cancellations": "⏰",
-    "loyalty_bluchip": "⭐",
+    "loyalty": "⭐",
     "special_assistance": "♿",
-    "6e_addons_and_services": "➕",
+    "ancillary_services": "➕",
     "international_travel": "🌍",
     "safety_and_security": "🔒",
 }
 
-SAMPLE_QUESTIONS = [
-    "IndiGo cancelled my flight 3 days before departure — what am I entitled to under DGCA?",
-    "What is the baggage allowance on 6E Prime?",
-    "Can I carry a lithium power bank over 20000mAh?",
-    "How do I redeem BluChip points?",
-    "What happens if my flight is delayed more than 4 hours?",
-    "Can I get a refund on a cancelled 6E Prime ticket?",
-    "What special assistance is available for wheelchair users?",
-]
+AIRLINE_OPTIONS = {
+    "All Airlines": "all",
+    "IndiGo (6E)": "indigo",
+    "Air India (AI)": "air_india",
+    "SpiceJet (SG)": "spicejet",
+}
+
+SAMPLE_QUESTIONS: dict[str, list[str]] = {
+    "all": [
+        "What are my rights if my flight is cancelled under DGCA rules?",
+        "Can I carry a lithium power bank over 20000mAh on any Indian airline?",
+        "What special assistance is available for wheelchair users?",
+        "Compare baggage allowances across IndiGo, Air India, and SpiceJet.",
+        "What compensation am I owed for denied boarding?",
+    ],
+    "indigo": [
+        "IndiGo cancelled my flight 3 days before departure — what am I entitled to under DGCA?",
+        "What is the baggage allowance on 6E Prime?",
+        "How do I redeem BluChip points?",
+        "What happens if my IndiGo flight is delayed more than 4 hours?",
+        "Can I get a refund on a cancelled 6E Prime ticket?",
+    ],
+    "air_india": [
+        "Air India cancelled my flight — what refund am I entitled to?",
+        "What is the Flying Returns Silver tier benefit for baggage?",
+        "How do I bid for a Business class upgrade on Air India?",
+        "What is the carry-on baggage limit on Air India economy?",
+        "How early can I check in online for an Air India flight?",
+    ],
+    "spicejet": [
+        "What is SpiceJet SpiceFlex and how does it differ from SpiceSaver?",
+        "Can I get a full refund on a SpiceFlex ticket?",
+        "What is the SpiceClub Gold tier baggage benefit?",
+        "How early do SpiceJet check-in counters open?",
+        "SpiceJet delayed my flight 5 hours — what am I entitled to?",
+    ],
+}
 
 
 @st.cache_resource(show_spinner="Connecting to Qdrant and building search index…")
 def init_pipeline() -> dict:
-    for key in ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "QDRANT_URL", "QDRANT_API_KEY"]:
+    for key in ["OPENAI_API_KEY", "QDRANT_URL", "QDRANT_API_KEY"]:
         if not os.getenv(key):
             try:
                 val = st.secrets.get(key)
@@ -62,7 +90,10 @@ def init_pipeline() -> dict:
             except Exception:
                 pass
 
-    from data.indigo_documents import DOCUMENTS
+    from data.indigo_documents import DOCUMENTS as INDIGO_DOCS
+    from data.air_india_documents import DOCUMENTS as AI_DOCS
+    from data.spicejet_documents import DOCUMENTS as SJ_DOCS
+    from data.dgca_documents import DOCUMENTS as DGCA_DOCS
     from src.agent.graph import build_graph, run_agent
     from src.embedding.vector_store import QdrantVectorStore
     from src.ingestion.chunker import ingest_all
@@ -74,7 +105,8 @@ def init_pipeline() -> dict:
             "Qdrant collection is empty. Run: uv run python scripts/ingest.py --reset"
         )
 
-    chunks = ingest_all(DOCUMENTS)
+    all_docs = INDIGO_DOCS + AI_DOCS + SJ_DOCS + DGCA_DOCS
+    chunks = ingest_all(all_docs)
     graph = build_graph(chunks, store)
     return {"graph": graph, "run_agent": run_agent, "n_chunks": n}
 
@@ -95,14 +127,26 @@ except Exception as e:
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.title("✈️ ISHA")
-    st.caption("IndiGo Smart Helpdesk Assistant")
+    st.caption("Indian Airlines Smart Helpdesk Assistant")
     st.success(f"✅ Connected to Qdrant — {pipeline['n_chunks']} policy chunks loaded")
     st.markdown("🟢 **System Ready**")
     st.divider()
 
+    st.markdown("**Select Airline:**")
+    airline_label = st.radio(
+        label="Airline",
+        options=list(AIRLINE_OPTIONS.keys()),
+        index=0,
+        label_visibility="collapsed",
+    )
+    selected_airline = AIRLINE_OPTIONS[airline_label]
+
+    st.divider()
+
     st.markdown("**Passengers often ask:**")
-    for q in SAMPLE_QUESTIONS:
-        if st.button(q, key=f"sq_{hash(q)}", use_container_width=True):
+    questions = SAMPLE_QUESTIONS.get(selected_airline, SAMPLE_QUESTIONS["all"])
+    for q in questions:
+        if st.button(q, key=f"sq_{selected_airline}_{hash(q)}", use_container_width=True):
             st.session_state["pending_query"] = q
 
     st.divider()
@@ -125,8 +169,8 @@ with st.sidebar:
 
 
 # ── Main area ─────────────────────────────────────────────────────────────────
-st.title("✈️ ISHA — IndiGo Smart Helpdesk Assistant")
-st.subheader("Ask me anything about IndiGo's policies and services")
+st.title("✈️ ISHA — Indian Airlines Smart Helpdesk Assistant")
+st.subheader("Ask me anything about IndiGo, Air India, or SpiceJet policies")
 
 if "messages" not in st.session_state:
     st.session_state["messages"] = []
@@ -170,13 +214,15 @@ if query:
     st.session_state["messages"].append({"role": "user", "content": query})
 
     with st.chat_message("assistant"):
-        with st.spinner("Searching IndiGo policy documents…"):
+        with st.spinner("Searching airline policy documents…"):
             try:
-                state = pipeline["run_agent"](query, pipeline["graph"])
+                state = pipeline["run_agent"](query, pipeline["graph"], airline=selected_airline)
                 answer: str = state["answer"]
                 chunks: list[dict] = state["retrieved_chunks"]
                 conf: float = state.get("confidence", 0.0)
             except Exception as e:
+                import traceback
+                print(f"[app] Query error:\n{traceback.format_exc()}")
                 answer = (
                     "I encountered an error while processing your query. "
                     "Please try again or contact IndiGo at **0124-6173838**."

@@ -13,19 +13,37 @@ MAX_CONTEXT_CHARS = 3000
 MIN_SCORE_REAL = 0.35
 MIN_SCORE_MOCK = 0.0
 
-_SYSTEM_TEMPLATE = """\
-You are IndiGo's virtual support agent. Answer the user's question using \
-ONLY the context passages provided below. Rules:
-- Cite documents by name when using their content.
-- Use bullet points for any step-by-step instructions.
-- State all amounts in INR (₹).
-- If the answer cannot be found in the provided context, respond with:
-  "I could not find this in IndiGo's policy documents. Please contact \
-IndiGo at 0124-6173838 or visit www.goindigo.in"
-- Do not speculate or use outside knowledge.
+_AIRLINE_LABELS = {
+    "indigo": "IndiGo",
+    "air_india": "Air India",
+    "spicejet": "SpiceJet",
+    "dgca": "DGCA",
+    "all": "the airline",
+}
 
-CONTEXT:
-{context}"""
+_AIRLINE_CONTACTS = {
+    "indigo": "IndiGo at 0124-6173838 or visit www.goindigo.in",
+    "air_india": "Air India at 1860-233-1407 or visit www.airindia.com",
+    "spicejet": "SpiceJet at 0124-7180000 or visit www.spicejet.com",
+    "all": "the airline's customer support or their official website",
+}
+
+
+def _build_system_prompt(context: str, airline: str = "all") -> str:
+    label = _AIRLINE_LABELS.get(airline, "the airline")
+    contact = _AIRLINE_CONTACTS.get(airline, _AIRLINE_CONTACTS["all"])
+    return (
+        f"You are a virtual customer support agent specialising in {label} airline policies. "
+        "Answer the user's question using ONLY the context passages provided below. Rules:\n"
+        "- Cite documents by name when using their content.\n"
+        "- Use bullet points for any step-by-step instructions.\n"
+        "- State all amounts in INR (₹) for Indian routes.\n"
+        "- If multiple airlines' policies are in the context, clearly attribute each point to the relevant airline.\n"
+        f'- If the answer cannot be found in the provided context, say: '
+        f'"I could not find this in the policy documents. Please contact {contact}."\n'
+        "- Do not speculate or use outside knowledge.\n\n"
+        f"CONTEXT:\n{context}"
+    )
 
 
 def embed_query(query: str) -> list[float]:
@@ -82,8 +100,8 @@ class RetrievalEngine:
             full = full[:MAX_CONTEXT_CHARS] + "\n[context truncated]"
         return full
 
-    def build_prompt(self, query: str, context: str) -> str:
-        system = _SYSTEM_TEMPLATE.format(context=context)
+    def build_prompt(self, query: str, context: str, airline: str = "all") -> str:
+        system = _build_system_prompt(context=context, airline=airline)
         return f"{system}\n\nUSER QUESTION: {query}"
 
 
