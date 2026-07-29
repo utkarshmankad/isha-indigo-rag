@@ -5,6 +5,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from src.security.validator import QueryValidator
+
 st.set_page_config(
     page_title="ISHA — Indian Airlines Smart Helpdesk Assistant",
     page_icon="✈️",
@@ -202,6 +204,8 @@ for msg in st.session_state["messages"]:
 user_input = st.chat_input("Ask about IndiGo policies, baggage, refunds, DGCA rights…")
 
 query: str | None = None
+airline = selected_airline
+
 if "pending_query" in st.session_state:
     query = st.session_state["pending_query"]
     del st.session_state["pending_query"]
@@ -209,6 +213,31 @@ elif user_input:
     query = user_input
 
 if query:
+    # Validate query for security
+    is_valid, reason, issues = QueryValidator.validate_input(query, airline)
+
+    # Security warning if issues detected
+    if issues:
+        with st.warning("⚠️ Security Notice"):
+            for category, message in issues:
+                if category.name == "safe":
+                    st.markdown(f"ℹ️ {message}")
+                else:
+                    st.error(f"🔒 {message}")
+        if not is_valid:
+            with st.chat_message("assistant"):
+                st.markdown(
+                    "I cannot process this query due to security concerns. "
+                    "Please rephrase without unusual patterns, and avoid mentioning personal information."
+                )
+            st.session_state["messages"].append({
+                "role": "assistant",
+                "content": "I cannot process this query due to security concerns.",
+            })
+        else:
+            # Validate but still allow with warnings
+            pass
+
     with st.chat_message("user"):
         st.markdown(query)
     st.session_state["messages"].append({"role": "user", "content": query})
@@ -216,7 +245,7 @@ if query:
     with st.chat_message("assistant"):
         with st.spinner("Searching airline policy documents…"):
             try:
-                state = pipeline["run_agent"](query, pipeline["graph"], airline=selected_airline)
+                state = pipeline["run_agent"](query, pipeline["graph"], airline=airline)
                 answer: str = state["answer"]
                 chunks: list[dict] = state["retrieved_chunks"]
                 conf: float = state.get("confidence", 0.0)
