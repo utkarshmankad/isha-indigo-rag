@@ -2,6 +2,7 @@ import os
 
 from src.embedding.embedder import embed_batch
 from src.embedding.vector_store import QdrantVectorStore
+from src.security.prompt_protection import PromptGuard
 
 DEFAULT_TOP_K = 5
 MAX_PER_DOC = 2
