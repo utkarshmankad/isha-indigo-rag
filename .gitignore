@@ -1,11 +1,67 @@
+# Environment variables with secrets (NEVER COMMIT)
 .env
+.env.local
+.env.*
+!.env.example
+
+# Virtual environments
 .venv/
+venv/
+env/
+
+# Python cache
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+.pytest_cache/
+.cache
+
+# Logs and runtime artifacts
 logs/
+*.log
+*.pid
+*.out
+
+# Streamlit secrets (local development)
 .streamlit/secrets.toml
+
+# Keys and certificates (NEVER COMMIT)
 *_api_key.txt
 *.key
-.bm25_cache/
+*.pem
+*.crt
+*.p12
+*.pfx
+secrets/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+.coverage
+htmlcov/
 .pytest_cache/
+
+# Database and vector stores
+*.db
+*.sqlite
+*.sqlite3
+.bm25_cache/
+*.pkl
+
+# IDE and editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+*.backup
+isha-indigo-rag_api_key.txt
