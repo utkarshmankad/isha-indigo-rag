@@ -41,6 +41,23 @@ class AgentState(TypedDict):
     iterations: int
     search_all: bool
     dgca_query: bool
+    stage_error: str
+
+
+_FALLBACK_CONTACTS = {
+    "indigo": "IndiGo at 0124-6173838 or visit www.goindigo.in",
+    "air_india": "Air India at 1860-233-1407 or visit www.airindia.com",
+    "spicejet": "SpiceJet at 0124-7180000 or visit www.spicejet.com",
+    "all": "the airline's customer support or their official website",
+}
+
+
+def _fallback_answer(airline: str) -> str:
+    contact = _FALLBACK_CONTACTS.get(airline, _FALLBACK_CONTACTS["all"])
+    return (
+        "I'm having trouble generating an answer right now. "
+        f"Please try again shortly, or contact {contact}."
+    )
 
 
 def generate_answer(prompt: str) -> str:
@@ -75,25 +92,34 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
 
     def select_tools_node(state: AgentState) -> dict:
         query = state["query"]
-        route = route_query(query)
 
-        selected = list(route["selected_tools"])
-        search_all = route["search_all"]
+        try:
+            route = route_query(query)
+            selected = list(route["selected_tools"])
+            search_all = route["search_all"]
 
-        q_lower = query.lower()
-        dgca_query = any(kw.lower() in q_lower for kw in DGCA_KEYWORDS)
+            q_lower = query.lower()
+            dgca_query = any(kw.lower() in q_lower for kw in DGCA_KEYWORDS)
 
-        if dgca_query:
-            for tool in DGCA_TOOLS:
-                if tool not in selected:
-                    selected.append(tool)
-            logger.info("DGCA detected, force-added tools", dgca_tools=DGCA_TOOLS)
+            if dgca_query:
+                for tool in DGCA_TOOLS:
+                    if tool not in selected:
+                        selected.append(tool)
+                logger.info("DGCA detected, force-added tools", dgca_tools=DGCA_TOOLS)
 
-        logger.info(
-            "tools selected",
-            selected_tools=selected, search_all=search_all, dgca_query=dgca_query,
-            reasoning=route["reasoning"],
-        )
+            logger.info(
+                "tools selected",
+                selected_tools=selected, search_all=search_all, dgca_query=dgca_query,
+                reasoning=route["reasoning"],
+            )
+            stage_error = ""
+        except Exception:
+            # Tool routing failed: degrade to a full-corpus search rather than crash.
+            logger.error("tool selection stage failed, degrading to search_all", exc_info=True)
+            selected = []
+            search_all = True
+            dgca_query = False
+            stage_error = "select_tools"
 
         return {
             "selected_tools": selected,
@@ -105,6 +131,7 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
             "answer": "",
             "confidence": 0.0,
             "airline": state.get("airline", "all"),
+            "stage_error": stage_error,
         }
 
     def retrieve_node(state: AgentState) -> dict:
@@ -121,42 +148,67 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
             "retrieve start", iteration=iterations, search_all=search_all, airline=airline,
         )
 
-        qvec = embed_batch([query])[0]
+        stage_error = ""
 
-        # Confidence from cosine similarity, scoped to airline if selected
-        conf_results = vector_store.query(qvec, top_k=3, airline_filter=airline_filter)
-        confidence = max((r["score"] for r in conf_results), default=0.0)
-        logger.info("confidence computed", confidence=round(confidence, 4))
+        try:
+            qvec = embed_batch([query])[0]
+        except Exception:
+            # Embedding stage failed: no vector, so retrieval can't run this pass.
+            logger.error("embedding stage failed", exc_info=True)
+            return {
+                "retrieved_chunks": [],
+                "confidence": 0.0,
+                "iterations": iterations,
+                "search_all": False,
+                "stage_error": "embedding",
+            }
 
-        # Hybrid search: per-tool filtered or global
-        all_chunks: dict[str, dict] = {}
-        if search_all:
-            results = hybrid_search(
-                query, qvec, bm25_index, vector_store, top_k=10,
-                airline_filter=airline_filter,
-            )
-            for r in results:
-                all_chunks[r["chunk_id"]] = r
-        else:
-            for tool in selected_tools:
+        try:
+            # Confidence from cosine similarity, scoped to airline if selected
+            conf_results = vector_store.query(qvec, top_k=3, airline_filter=airline_filter)
+            confidence = max((r["score"] for r in conf_results), default=0.0)
+            logger.info("confidence computed", confidence=round(confidence, 4))
+
+            # Hybrid search: per-tool filtered or global
+            all_chunks: dict[str, dict] = {}
+            if search_all:
                 results = hybrid_search(
-                    query, qvec, bm25_index, vector_store,
-                    top_k=5, filters={"category": tool},
+                    query, qvec, bm25_index, vector_store, top_k=10,
                     airline_filter=airline_filter,
                 )
                 for r in results:
                     all_chunks[r["chunk_id"]] = r
+            else:
+                for tool in selected_tools:
+                    results = hybrid_search(
+                        query, qvec, bm25_index, vector_store,
+                        top_k=5, filters={"category": tool},
+                        airline_filter=airline_filter,
+                    )
+                    for r in results:
+                        all_chunks[r["chunk_id"]] = r
 
-        # Dedupe, keep top 5 by fusion_score
-        deduped = sorted(
-            all_chunks.values(), key=lambda r: r["fusion_score"], reverse=True
-        )[:5]
+            # Dedupe, keep top 5 by fusion_score
+            deduped = sorted(
+                all_chunks.values(), key=lambda r: r["fusion_score"], reverse=True
+            )[:5]
 
-        logger.info(
-            "retrieval deduped",
-            chunk_count=len(deduped),
-            top_scores=[round(r["fusion_score"], 4) for r in deduped],
-        )
+            logger.info(
+                "retrieval deduped",
+                chunk_count=len(deduped),
+                top_scores=[round(r["fusion_score"], 4) for r in deduped],
+            )
+        except Exception:
+            # Retrieval backend (Qdrant/BM25) failed: proceed with no chunks
+            # instead of crashing the whole query.
+            logger.error("retrieval stage failed", exc_info=True)
+            return {
+                "retrieved_chunks": [],
+                "confidence": 0.0,
+                "iterations": iterations,
+                "search_all": False,
+                "stage_error": "retrieval",
+            }
 
         # Pre-set search_all for possible second pass
         expand_next = confidence < CONFIDENCE_THRESHOLD and iterations < MAX_ITERATIONS
@@ -166,6 +218,7 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
             "confidence": confidence,
             "iterations": iterations,
             "search_all": expand_next,
+            "stage_error": stage_error,
         }
 
     def generate_node(state: AgentState) -> dict:
@@ -176,13 +229,22 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
         logger.info("generating answer", dgca_query=dgca_query)
 
         airline = state.get("airline", "all")
-        context = engine.build_context(chunks)
-        prompt = engine.build_prompt(query, context, airline=airline)
-        if dgca_query:
-            prompt = prompt + DGCA_INSTRUCTION
+        try:
+            context = engine.build_context(chunks)
+            prompt = engine.build_prompt(query, context, airline=airline)
+            if dgca_query:
+                prompt = prompt + DGCA_INSTRUCTION
+        except Exception:
+            logger.error("prompt construction failed", exc_info=True)
+            return {"context": "", "answer": _fallback_answer(airline), "stage_error": "generation"}
 
         t0 = time.time()
-        answer = generate_answer(prompt)
+        try:
+            answer = generate_answer(prompt)
+        except Exception:
+            # LLM call failed outright: don't crash the request, give a safe fallback.
+            logger.error("generation stage failed", exc_info=True)
+            return {"context": context, "answer": _fallback_answer(airline), "stage_error": "generation"}
         latency_ms = int((time.time() - t0) * 1000)
 
         try:
@@ -199,7 +261,7 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
         except Exception:
             logger.warning("query log write failed", exc_info=True)
 
-        return {"context": context, "answer": answer}
+        return {"context": context, "answer": answer, "stage_error": ""}
 
     def should_continue(state: AgentState) -> str:
         confidence = state["confidence"]
@@ -239,6 +301,7 @@ def run_agent(query: str, graph, airline: str = "all") -> AgentState:
         "iterations": 0,
         "search_all": False,
         "dgca_query": False,
+        "stage_error": "",
     }
 
     final_state = graph.invoke(initial_state)
