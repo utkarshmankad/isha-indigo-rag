@@ -22,6 +22,8 @@ def log_query(
     latency_ms: int,
     dgca_query: bool = False,
     correlation_id: str = "",
+    expanded_search: bool = False,
+    stage_error: str = "",
 ) -> None:
     Path(LOG_FILE).parent.mkdir(parents=True, exist_ok=True)
     sources = [
@@ -32,6 +34,10 @@ def log_query(
         }
         for c in retrieved_chunks
     ]
+    relevance_scores = [c.get("score", 0.0) for c in retrieved_chunks]
+    avg_relevance = round(sum(relevance_scores) / len(relevance_scores), 3) if relevance_scores else 0.0
+    fallback_triggered = expanded_search or bool(stage_error) or not retrieved_chunks
+
     record = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "correlation_id": correlation_id,
@@ -42,6 +48,10 @@ def log_query(
         "answer_length": len(answer),
         "dgca_query": dgca_query,
         "sources": sources,
+        "avg_relevance_score": avg_relevance,
+        "expanded_search": expanded_search,
+        "stage_error": stage_error,
+        "fallback_triggered": fallback_triggered,
     }
     with _lock:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
@@ -92,6 +102,16 @@ def print_summary() -> None:
     dgca_count = sum(1 for e in entries if e.get("dgca_query"))
     dgca_pct = dgca_count / total * 100
 
+    relevance_scores = [e["avg_relevance_score"] for e in entries if "avg_relevance_score" in e]
+    avg_relevance = sum(relevance_scores) / len(relevance_scores) if relevance_scores else 0.0
+
+    fallback_count = sum(1 for e in entries if e.get("fallback_triggered"))
+    fallback_pct = fallback_count / total * 100
+
+    stage_error_counter: Counter = Counter(
+        e["stage_error"] for e in entries if e.get("stage_error")
+    )
+
     low_conf = [e for e in entries if e["confidence"] < 0.40]
 
     print("=" * 60)
@@ -99,7 +119,13 @@ def print_summary() -> None:
     print("=" * 60)
     print(f"Total queries      : {total}")
     print(f"Avg confidence     : {avg_conf:.3f}")
+    print(f"Avg relevance      : {avg_relevance:.3f}")
     print(f"Avg latency        : {avg_lat:.0f} ms")
+    print(f"Fallback rate      : {fallback_count}/{total} ({fallback_pct:.1f}%)")
+    if stage_error_counter:
+        print("  Stage failures:")
+        for stage, count in stage_error_counter.most_common():
+            print(f"    {stage:<20} {count:>4}")
     print()
     print("Top categories queried:")
     for cat, count in cat_counter.most_common():

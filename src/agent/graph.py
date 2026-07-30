@@ -278,6 +278,8 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
                 latency_ms=latency_ms,
                 dgca_query=dgca_query,
                 correlation_id=cid,
+                expanded_search=state["iterations"] > 1,
+                stage_error=state.get("stage_error", ""),
             )
         except Exception:
             logger.warning("query log write failed", correlation_id=cid, exc_info=True)
