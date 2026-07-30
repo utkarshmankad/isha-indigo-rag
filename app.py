@@ -5,7 +5,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+import uuid
+
+from src.observability.logging_config import get_logger
 from src.security.validator import QueryValidator
+
+logger = get_logger("app")
 
 st.set_page_config(
     page_title="ISHA — Indian Airlines Smart Helpdesk Assistant",
@@ -242,16 +247,19 @@ if query:
         st.markdown(query)
     st.session_state["messages"].append({"role": "user", "content": query})
 
+    correlation_id = str(uuid.uuid4())
+
     with st.chat_message("assistant"):
         with st.spinner("Searching airline policy documents…"):
             try:
-                state = pipeline["run_agent"](query, pipeline["graph"], airline=airline)
+                state = pipeline["run_agent"](
+                    query, pipeline["graph"], airline=airline, correlation_id=correlation_id,
+                )
                 answer: str = state["answer"]
                 chunks: list[dict] = state["retrieved_chunks"]
                 conf: float = state.get("confidence", 0.0)
-            except Exception as e:
-                import traceback
-                print(f"[app] Query error:\n{traceback.format_exc()}")
+            except Exception:
+                logger.error("query failed in app layer", correlation_id=correlation_id, exc_info=True)
                 answer = (
                     "I encountered an error while processing your query. "
                     "Please try again or contact IndiGo at **0124-6173838**."

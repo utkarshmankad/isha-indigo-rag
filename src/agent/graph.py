@@ -1,5 +1,6 @@
 import os
 import time
+import uuid
 from typing import TypedDict
 
 from dotenv import load_dotenv
@@ -48,6 +49,7 @@ class AgentState(TypedDict):
     search_all: bool
     dgca_query: bool
     stage_error: str
+    correlation_id: str
 
 
 _FALLBACK_CONTACTS = {
@@ -102,6 +104,7 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
 
     def select_tools_node(state: AgentState) -> dict:
         query = state["query"]
+        cid = state["correlation_id"]
 
         try:
             route = route_query(query)
@@ -115,17 +118,21 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
                 for tool in DGCA_TOOLS:
                     if tool not in selected:
                         selected.append(tool)
-                logger.info("DGCA detected, force-added tools", dgca_tools=DGCA_TOOLS)
+                logger.info("DGCA detected, force-added tools", correlation_id=cid, dgca_tools=DGCA_TOOLS)
 
             logger.info(
                 "tools selected",
+                correlation_id=cid,
                 selected_tools=selected, search_all=search_all, dgca_query=dgca_query,
                 reasoning=route["reasoning"],
             )
             stage_error = ""
         except Exception:
             # Tool routing failed: degrade to a full-corpus search rather than crash.
-            logger.error("tool selection stage failed, degrading to search_all", exc_info=True)
+            logger.error(
+                "tool selection stage failed, degrading to search_all",
+                correlation_id=cid, exc_info=True,
+            )
             selected = []
             search_all = True
             dgca_query = False
@@ -146,6 +153,7 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
 
     def retrieve_node(state: AgentState) -> dict:
         query = state["query"]
+        cid = state["correlation_id"]
         iterations = state["iterations"] + 1
         search_all = state["search_all"]
         selected_tools = state["selected_tools"]
@@ -155,7 +163,7 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
         airline_filter = None if airline == "all" else [airline, "dgca"]
 
         logger.info(
-            "retrieve start", iteration=iterations, search_all=search_all, airline=airline,
+            "retrieve start", correlation_id=cid, iteration=iterations, search_all=search_all, airline=airline,
         )
 
         stage_error = ""
@@ -164,7 +172,7 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
             qvec = embed_batch([query])[0]
         except Exception:
             # Embedding stage failed: no vector, so retrieval can't run this pass.
-            logger.error("embedding stage failed", exc_info=True)
+            logger.error("embedding stage failed", correlation_id=cid, exc_info=True)
             return {
                 "retrieved_chunks": [],
                 "confidence": 0.0,
@@ -177,7 +185,7 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
             # Confidence from cosine similarity, scoped to airline if selected
             conf_results = vector_store.query(qvec, top_k=3, airline_filter=airline_filter)
             confidence = max((r["score"] for r in conf_results), default=0.0)
-            logger.info("confidence computed", confidence=round(confidence, 4))
+            logger.info("confidence computed", correlation_id=cid, confidence=round(confidence, 4))
 
             # Hybrid search: per-tool filtered or global
             all_chunks: dict[str, dict] = {}
@@ -205,13 +213,14 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
 
             logger.info(
                 "retrieval deduped",
+                correlation_id=cid,
                 chunk_count=len(deduped),
                 top_scores=[round(r["fusion_score"], 4) for r in deduped],
             )
         except Exception:
             # Retrieval backend (Qdrant/BM25) failed: proceed with no chunks
             # instead of crashing the whole query.
-            logger.error("retrieval stage failed", exc_info=True)
+            logger.error("retrieval stage failed", correlation_id=cid, exc_info=True)
             return {
                 "retrieved_chunks": [],
                 "confidence": 0.0,
@@ -233,10 +242,11 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
 
     def generate_node(state: AgentState) -> dict:
         query = state["query"]
+        cid = state["correlation_id"]
         chunks = state["retrieved_chunks"]
         dgca_query = state["dgca_query"]
 
-        logger.info("generating answer", dgca_query=dgca_query)
+        logger.info("generating answer", correlation_id=cid, dgca_query=dgca_query)
 
         airline = state.get("airline", "all")
         try:
@@ -245,7 +255,7 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
             if dgca_query:
                 prompt = prompt + DGCA_INSTRUCTION
         except Exception:
-            logger.error("prompt construction failed", exc_info=True)
+            logger.error("prompt construction failed", correlation_id=cid, exc_info=True)
             return {"context": "", "answer": _fallback_answer(airline), "stage_error": "generation"}
 
         t0 = time.time()
@@ -253,7 +263,7 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
             answer = generate_answer(prompt)
         except Exception:
             # LLM call failed outright: don't crash the request, give a safe fallback.
-            logger.error("generation stage failed", exc_info=True)
+            logger.error("generation stage failed", correlation_id=cid, exc_info=True)
             return {"context": context, "answer": _fallback_answer(airline), "stage_error": "generation"}
         latency_ms = int((time.time() - t0) * 1000)
 
@@ -267,9 +277,10 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
                 answer=answer,
                 latency_ms=latency_ms,
                 dgca_query=dgca_query,
+                correlation_id=cid,
             )
         except Exception:
-            logger.warning("query log write failed", exc_info=True)
+            logger.warning("query log write failed", correlation_id=cid, exc_info=True)
 
         return {"context": context, "answer": answer, "stage_error": ""}
 
@@ -277,7 +288,11 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
         confidence = state["confidence"]
         iterations = state["iterations"]
         next_step = "generate" if confidence >= CONFIDENCE_THRESHOLD or iterations >= MAX_ITERATIONS else "retrieve"
-        logger.info("routing decision", confidence=round(confidence, 4), iterations=iterations, next_step=next_step)
+        logger.info(
+            "routing decision",
+            correlation_id=state["correlation_id"],
+            confidence=round(confidence, 4), iterations=iterations, next_step=next_step,
+        )
         return next_step
 
     workflow = StateGraph(AgentState)
@@ -297,8 +312,9 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
     return workflow.compile()
 
 
-def run_agent(query: str, graph, airline: str = "all") -> AgentState:
-    logger.info("query received", query=query, airline=airline)
+def run_agent(query: str, graph, airline: str = "all", correlation_id: str | None = None) -> AgentState:
+    cid = correlation_id or str(uuid.uuid4())
+    logger.info("query received", correlation_id=cid, query=query, airline=airline)
 
     initial_state: AgentState = {
         "query": query,
@@ -312,16 +328,19 @@ def run_agent(query: str, graph, airline: str = "all") -> AgentState:
         "search_all": False,
         "dgca_query": False,
         "stage_error": "",
+        "correlation_id": cid,
     }
 
     final_state = graph.invoke(initial_state)
 
     logger.info(
         "query complete",
+        correlation_id=cid,
         confidence=round(final_state["confidence"], 4),
         iterations=final_state["iterations"],
         dgca_query=final_state["dgca_query"],
         answer_length=len(final_state["answer"]),
+        stage_error=final_state.get("stage_error", ""),
     )
     return final_state
 

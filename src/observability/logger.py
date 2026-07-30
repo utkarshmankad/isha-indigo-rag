@@ -21,6 +21,7 @@ def log_query(
     answer: str,
     latency_ms: int,
     dgca_query: bool = False,
+    correlation_id: str = "",
 ) -> None:
     Path(LOG_FILE).parent.mkdir(parents=True, exist_ok=True)
     sources = [
@@ -33,6 +34,7 @@ def log_query(
     ]
     record = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "correlation_id": correlation_id,
         "query": query,
         "selected_tools": selected_tools,
         "confidence": round(confidence, 2),
@@ -46,6 +48,7 @@ def log_query(
             f.write(json.dumps(record) + "\n")
     logger.info(
         "query logged",
+        correlation_id=correlation_id,
         confidence=round(confidence, 2), latency_ms=int(latency_ms), selected_tools=selected_tools,
     )
 
