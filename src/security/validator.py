@@ -48,7 +48,15 @@ PASSPORT_PATTERN = r"\b[A-Z]{1,2}\d{6,8}\b"
 # Likely attack patterns
 CURLY_BRACES_PATTERN = r"\{[^{}]*\{[^{}]*\}[^{}]*\}"  # Nested curly braces
 SQL_INJECTION_PATTERN = r"(\b(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE|UNION|EXEC)\b|#|';|--)"
-BASH_EXEC_PATTERN = r"(`|;|\|\||\$\(|\$\{|&&|\$[a-zA-Z_][a-zA-Z0-9_]*)"
+# Shell metacharacters. Command substitution, separators, and logical
+# operators are always flagged. Pipe/redirect/background operators are
+# flagged when written shell-style (metacharacter adjacent to the next
+# token, e.g. "cat|sh", ">/tmp/x") rather than as spaced-out prose
+# comparisons, so a question like "delayed > 4 hours" isn't rejected.
+BASH_EXEC_PATTERN = (
+    r"(`|\$\(|\$\{|;|&&|\|\||\$[a-zA-Z_][a-zA-Z0-9_]*"
+    r"|\|\S|[0-9]?>>?\S|<\S|&\s*$)"
+)
 
 # Forbidden words/themes
 FORBIDDEN_PATTERNS = [
