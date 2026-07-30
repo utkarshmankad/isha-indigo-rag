@@ -2,27 +2,22 @@
 Rate limiting utilities for query throttling.
 
 Monitors query rate per session and globally to prevent API abuse
-and cost escalation.
+and cost escalation. Heuristic, in-process approach (no Redis needed):
+per-session counters live in Streamlit's st.session_state, the global
+counter lives in a module-level dict shared by every session in this
+process.
 """
 
+import threading
 import time
+import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal
 
-from typing import Optional
-from dataclasses import dataclass, field
+from src.observability.logging_config import get_logger
 
-
-@dataclass
-class RateLimitExceeded:
-    """Result when rate limit is exceeded."""
-
-    is_rate_limited: bool = True
-    required_limit_reached: int
-    limit_window: int
-    retry_after: int  # seconds
-    message: str
-
+logger = get_logger("security.rate_limiter")
 
 # Default rate limits (configurable)
 DEFAULT_SESSION_QPM = 30  # Queries Per Minute per session
@@ -30,13 +25,17 @@ DEFAULT_GLOBAL_QPM = 100  # Queries Per Minute globally
 DEFAULT_SESSION_QPH = 500  # Queries Per Hour per session
 DEFAULT_GLOBAL_QPH = 1000  # Queries Per Hour globally
 
-# Configuration
-MAX_QUERY_TIME_COST = 2.0  # Maximum token cost for a query (increases if no limit)
+_WINDOW_SECONDS = {"qpm": 60, "qph": 3600}
+
+# Global (cross-session) counters, protected by a lock since Streamlit
+# can serve multiple sessions concurrently in the same process.
+_global_lock = threading.Lock()
+_global_queries: list[float] = []
 
 
 @dataclass
 class RateLimitResult:
-    """Result of rate limit check."""
+    """Result of a rate limit check."""
 
     is_allowed: bool
     reason: str
@@ -45,203 +44,119 @@ class RateLimitResult:
     retry_after_seconds: int = 0
 
 
+def _prune(timestamps: list[float], window_seconds: int) -> list[float]:
+    cutoff = time.time() - window_seconds
+    return [t for t in timestamps if t > cutoff]
+
+
 class RateLimiter:
     """Throttle queries based on session and global limits."""
 
     @staticmethod
-    def _get_session_key() -> str:
-        """
-        Generate a unique key for the current Streamlit session.
-
-        Returns:
-            Session identifier string.
-        """
+    def _get_session_state() -> dict:
         import streamlit as st
 
-        session_id = st.session_state.get("session_id", "unknown")
-        return f"session:{session_id}"
-
-    @staticmethod
-    def _get_global_key() -> str:
-        """
-        Generate a unique key for the current client.
-
-        In a web service, this would use the actual IP address.
-        For Streamlit community cloud, we track globally.
-
-        Returns:
-            Global identifier string.
-        """
-        return "global"
-
-    @staticmethod
-    def _get_rate_limit_key(limit_type: str, key: str) -> str:
-        """
-        Build Redis-compatible key name.
-
-        Args:
-            limit_type: Type of limit ("session" or "global")
-            key: The actual identifier
-
-        Returns:
-            Storage key
-        """
-        return f"rate_limit:{limit_type}:{key}"
-
-    @staticmethod
-    def _get_invalidated_prefix(limit_type: str, key: str) -> str:
-        """
-        Get Redis key pattern to invalidate entries.
-
-        Args:
-            limit_type: Type of limit ("session" or "global")
-            key: The identifier
-
-        Returns:
-            Redis key pattern string
-        """
-        return f"rate_limit:{limit_type}:{key}*"
+        if "session_id" not in st.session_state:
+            st.session_state["session_id"] = str(uuid.uuid4())
+        if "rate_limit_queries" not in st.session_state:
+            st.session_state["rate_limit_queries"] = []
+        return st.session_state
 
     @classmethod
-    def acquirer(cls, limit_type: Literal["session", "global"], limit_per_window: int) -> bool:
-        """
-        Acquire permission to make a query (one-time check).
+    def _check_session(cls, limit_per_minute: int, limit_per_hour: int) -> RateLimitResult | None:
+        """Returns a rejection RateLimitResult if the session limit is exceeded, else None."""
+        state = cls._get_session_state()
+        queries = state["rate_limit_queries"]
 
-        This is a heuristic approach that approximates rate limiting
-        without needing a persistent backend like Redis.
+        queries_minute = _prune(queries, _WINDOW_SECONDS["qpm"])
+        if len(queries_minute) >= limit_per_minute:
+            retry_after = max(1, int(_WINDOW_SECONDS["qpm"] - (time.time() - min(queries_minute))))
+            return RateLimitResult(
+                is_allowed=False,
+                reason=f"You're sending queries too quickly. Please wait {retry_after}s and try again.",
+                remaining_queries=0,
+                retry_after_seconds=retry_after,
+            )
 
-        Args:
-            limit_type: Type of limit to check ("session" or "global")
-            limit_per_window: Max queries per time window
+        queries_hour = _prune(queries, _WINDOW_SECONDS["qph"])
+        if len(queries_hour) >= limit_per_hour:
+            retry_after = max(1, int(_WINDOW_SECONDS["qph"] - (time.time() - min(queries_hour))))
+            return RateLimitResult(
+                is_allowed=False,
+                reason=f"Hourly query limit reached. Please try again in {retry_after // 60} minutes.",
+                remaining_queries=0,
+                retry_after_seconds=retry_after,
+            )
 
-        Returns:
-            True if allowed, False if rate limited
-        """
-        session_id = session_state.get("session_id", "unknown")
-
-        current_time = time.time()
-        key_prefix = cls._get_rate_limit_key(limit_type, cls._get_session_key() if limit_type == "session" else cls._get_global_key())
-
-        # Initialize rate limit tracking in session state
-        if f"rate_limit_{limit_type}" not in session_state:
-            session_state[f"rate_limit_{limit_type}"] = {
-                "queries": [],
-                "limit": limit_per_window,
-            }
-
-        limits = session_state[f"rate_limit_{limit_type}"]
-
-        # Remove old queries outside time window
-        window_seconds = 60  # Default: 1 minute
-        if limit_per_window > 100:
-            window_seconds = 3600  # Default: 1 hour for higher limits
-
-        now = datetime.now()
-        limits["queries"] = [
-            q_time
-            for q_time in limits["queries"]
-            if (now - datetime.fromtimestamp(q_time)).total_seconds() < window_seconds
-        ]
-
-        # Check if limit reached
-        if len(limits["queries"]) >= limit_per_window:
-            # Calculate retry time based on oldest query in window
-            oldest_query = min(limits["queries"])
-            oldest_dt = datetime.fromtimestamp(oldest_query)
-            time_until_reset = (oldest_dt + timedelta(seconds=window_seconds)) - now
-            retry_after = max(1, int(time_until_reset.total_seconds()))
-
-            return False
-
-        # Increment query counter
-        limits["queries"].append(current_time)
-
-        return True
+        return None
 
     @classmethod
-    def check_rate_limit(cls) -> RateLimitResult:
+    def _check_global(cls, limit_per_minute: int) -> RateLimitResult | None:
+        """Returns a rejection RateLimitResult if the global limit is exceeded, else None."""
+        with _global_lock:
+            global _global_queries
+            _global_queries = _prune(_global_queries, _WINDOW_SECONDS["qpm"])
+            if len(_global_queries) >= limit_per_minute:
+                return RateLimitResult(
+                    is_allowed=False,
+                    reason="Service is currently busy. Please try again in a moment.",
+                    remaining_queries=0,
+                    retry_after_seconds=60,
+                )
+        return None
+
+    @classmethod
+    def check_rate_limit(
+        cls,
+        session_qpm: int = DEFAULT_SESSION_QPM,
+        session_qph: int = DEFAULT_SESSION_QPH,
+        global_qpm: int = DEFAULT_GLOBAL_QPM,
+    ) -> RateLimitResult:
         """
-        Check if query is allowed based on configured limits.
+        Check whether a new query is allowed, and if so, record it.
 
         Returns:
             RateLimitResult with allowance status.
         """
-        import streamlit.session_state as session_state
+        session_rejection = cls._check_session(session_qpm, session_qph)
+        if session_rejection is not None:
+            logger.warning("session rate limit exceeded", limit_qpm=session_qpm)
+            return session_rejection
 
-        # Get session ID for tracking
-        if "session_id" not in session_state:
-            session_state["session_id"] = f"{time.time()}:{id(streamlit.runtime.streamlit_instance)."()"
+        global_rejection = cls._check_global(global_qpm)
+        if global_rejection is not None:
+            logger.warning("global rate limit exceeded", limit_qpm=global_qpm)
+            return global_rejection
 
-        session_id = session_state["session_id"]
+        # Allowed: record this query against both counters.
+        now = time.time()
+        state = cls._get_session_state()
+        state["rate_limit_queries"].append(now)
+        state["rate_limit_queries"] = _prune(state["rate_limit_queries"], _WINDOW_SECONDS["qph"])
 
-        # Check individual session rate limits
-        session_qpm = DEFAULT_SESSION_QPM
-        session_qph = DEFAULT_SESSION_QPH
+        with _global_lock:
+            global _global_queries
+            _global_queries.append(now)
+            _global_queries = _prune(_global_queries, _WINDOW_SECONDS["qpm"])
 
-        session_allowed = cls.acquirer("session", session_qpm)
-
-        # If session limit exceeded, return information
-        if not session_allowed:
-            # For heuristic rate limiting, we'd return how many more queries can be made
-            remaining = max(0, session_qpm - len(session_state["rate_limit_session"]["queries"]))
-            return RateLimitResult(
-                is_allowed=False,
-                reason=f"Session rate limit exceeded. Please wait {60 - (time.time() % 60)} more seconds.",
-                remaining_queries=remaining,
-                retry_after_seconds=60,
-            )
-
-        # Check global rate limit for cost protection
-        global_allowed = cls.acquirer("global", DEFAULT_GLOBAL_QPM)
-
-        if not global_allowed:
-            return RateLimitResult(
-                is_allowed=False,
-                reason="Global rate limit exceeded. Service is currently busy.",
-                remaining_queries=0,
-                retry_after_seconds=60,
-            )
-
-        # Query allowed
-        session_remaining = session_qpm - len(session_state["rate_limit_session"]["queries"])
+        remaining = max(0, session_qpm - len(_prune(state["rate_limit_queries"], _WINDOW_SECONDS["qpm"])))
         return RateLimitResult(
             is_allowed=True,
             reason="Query allowed",
-            remaining_queries=session_remaining,
-            reset_time=None,
+            remaining_queries=remaining,
         )
 
     @classmethod
     def get_rate_limit_info(cls) -> dict[str, int]:
-        """
-        Get current rate limit status.
-
-        Returns:
-            Dictionary with current status.
-        """
-        import streamlit.session_state as session_state
-
-        # Initialize
-        if "rate_limit_session" not in session_state:
-            session_state["rate_limit_session"] = {"queries": [], "limit": DEFAULT_SESSION_QPM}
-        if "rate_limit_global" not in session_state:
-            session_state["rate_limit_global"] = {"queries": [], "limit": DEFAULT_GLOBAL_QPM}
-
-        # Calculate remaining
-        session_remaining = max(
-            0,
-            session_state["rate_limit_session"]["limit"]
-            - len(session_state["rate_limit_session"]["queries"]),
-        )
-        global_remaining = max(
-            0,
-            session_state["rate_limit_global"]["limit"]
-            - len(session_state["rate_limit_global"]["queries"]),
-        )
+        """Get current rate limit status for display in the UI."""
+        state = cls._get_session_state()
+        session_used = len(_prune(state["rate_limit_queries"], _WINDOW_SECONDS["qpm"]))
+        with _global_lock:
+            global_used = len(_prune(_global_queries, _WINDOW_SECONDS["qpm"]))
 
         return {
-            "session_remaining": session_remaining,
-            "global_remaining": global_remaining,
+            "session_remaining": max(0, DEFAULT_SESSION_QPM - session_used),
+            "global_remaining": max(0, DEFAULT_GLOBAL_QPM - global_used),
             "config_session_qpm": DEFAULT_SESSION_QPM,
             "config_global_qpm": DEFAULT_GLOBAL_QPM,
         }

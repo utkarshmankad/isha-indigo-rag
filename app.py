@@ -8,6 +8,7 @@ load_dotenv()
 import uuid
 
 from src.observability.logging_config import get_logger
+from src.security.rate_limiter import RateLimiter
 from src.security.validator import QueryValidator
 
 logger = get_logger("app")
@@ -168,6 +169,12 @@ with st.sidebar:
     else:
         st.caption("No queries yet.")
 
+    rl_info = RateLimiter.get_rate_limit_info()
+    st.caption(
+        f"Rate limit: {rl_info['session_remaining']}/{rl_info['config_session_qpm']} "
+        "queries left this minute"
+    )
+
     st.divider()
     st.caption(
         "⚠️ ISHA is a demo assistant, not affiliated with IndiGo Airlines.  \n"
@@ -218,64 +225,77 @@ elif user_input:
     query = user_input
 
 if query:
-    # Validate query for security
-    is_valid, reason, issues = QueryValidator.validate_input(query, airline)
-
-    # Security warning if issues detected
-    if issues:
-        with st.warning("⚠️ Security Notice"):
-            for category, message in issues:
-                if category.name == "safe":
-                    st.markdown(f"ℹ️ {message}")
-                else:
-                    st.error(f"🔒 {message}")
-        if not is_valid:
-            with st.chat_message("assistant"):
-                st.markdown(
-                    "I cannot process this query due to security concerns. "
-                    "Please rephrase without unusual patterns, and avoid mentioning personal information."
-                )
-            st.session_state["messages"].append({
-                "role": "assistant",
-                "content": "I cannot process this query due to security concerns.",
-            })
-        else:
-            # Validate but still allow with warnings
-            pass
-
     with st.chat_message("user"):
         st.markdown(query)
     st.session_state["messages"].append({"role": "user", "content": query})
 
-    correlation_id = str(uuid.uuid4())
+    # Rate limit check — reject before spending any retrieval/LLM cost.
+    rate_result = RateLimiter.check_rate_limit()
+    if not rate_result.is_allowed:
+        logger.warning(
+            "query blocked by rate limit",
+            reason=rate_result.reason, retry_after_seconds=rate_result.retry_after_seconds,
+        )
+        with st.chat_message("assistant"):
+            st.warning(f"⏳ {rate_result.reason}")
+        st.session_state["messages"].append({
+            "role": "assistant",
+            "content": rate_result.reason,
+        })
+        is_valid = False
+    else:
+        # Validate query for security
+        is_valid, reason, issues = QueryValidator.validate_input(query, airline)
 
-    with st.chat_message("assistant"):
-        with st.spinner("Searching airline policy documents…"):
-            try:
-                state = pipeline["run_agent"](
-                    query, pipeline["graph"], airline=airline, correlation_id=correlation_id,
-                )
-                answer: str = state["answer"]
-                chunks: list[dict] = state["retrieved_chunks"]
-                conf: float = state.get("confidence", 0.0)
-            except Exception:
-                logger.error("query failed in app layer", correlation_id=correlation_id, exc_info=True)
-                answer = (
-                    "I encountered an error while processing your query. "
-                    "Please try again or contact IndiGo at **0124-6173838**."
-                )
-                chunks = []
-                conf = 0.0
+        # Security warning if issues detected
+        if issues:
+            with st.warning("⚠️ Security Notice"):
+                for category, message in issues:
+                    if category.name == "safe":
+                        st.markdown(f"ℹ️ {message}")
+                    else:
+                        st.error(f"🔒 {message}")
+            if not is_valid:
+                with st.chat_message("assistant"):
+                    st.markdown(
+                        "I cannot process this query due to security concerns. "
+                        "Please rephrase without unusual patterns, and avoid mentioning personal information."
+                    )
+                st.session_state["messages"].append({
+                    "role": "assistant",
+                    "content": "I cannot process this query due to security concerns.",
+                })
 
-        st.markdown(answer)
-        if chunks:
-            render_sources(chunks)
+    if is_valid:
+        correlation_id = str(uuid.uuid4())
 
-    st.session_state["session_query_count"] += 1
-    st.session_state["session_confidences"].append(conf)
+        with st.chat_message("assistant"):
+            with st.spinner("Searching airline policy documents…"):
+                try:
+                    state = pipeline["run_agent"](
+                        query, pipeline["graph"], airline=airline, correlation_id=correlation_id,
+                    )
+                    answer: str = state["answer"]
+                    chunks: list[dict] = state["retrieved_chunks"]
+                    conf: float = state.get("confidence", 0.0)
+                except Exception:
+                    logger.error("query failed in app layer", correlation_id=correlation_id, exc_info=True)
+                    answer = (
+                        "I encountered an error while processing your query. "
+                        "Please try again or contact IndiGo at **0124-6173838**."
+                    )
+                    chunks = []
+                    conf = 0.0
 
-    st.session_state["messages"].append({
-        "role": "assistant",
-        "content": answer,
-        "chunks": chunks,
-    })
+            st.markdown(answer)
+            if chunks:
+                render_sources(chunks)
+
+        st.session_state["session_query_count"] += 1
+        st.session_state["session_confidences"].append(conf)
+
+        st.session_state["messages"].append({
+            "role": "assistant",
+            "content": answer,
+            "chunks": chunks,
+        })
