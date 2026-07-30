@@ -43,7 +43,7 @@ FORBIDDEN_LEADERS = [
 ]
 
 # Delimiters to prevent content injection
- DELIMITERS = [
+DELIMITERS = [
     ["### USER CONTEXT ###", "### END USER CONTEXT ###"],
     ["RETRIEVED CONTEXT:", "### END RETRIEVED CONTEXT ###"],
     ["CITATIONS:", "### END CITATIONS ###"],
@@ -63,8 +63,8 @@ class PromptAnalysisResult(BaseModel):
 class PredeterminedOutput(BaseModel):
     """Result if prompt injection detected."""
 
-    definition = "the provided context"
-    response = "I could not find this in the policy documents. Please contact {contact_info}."
+    definition: str = "the provided context"
+    response: str = "I could not find this in the policy documents. Please contact {contact_info}."
 
 
 class PromptGuard:

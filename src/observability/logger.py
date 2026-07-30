@@ -4,6 +4,10 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+from src.observability.logging_config import get_logger
+
+logger = get_logger("observability.query_log")
+
 LOG_FILE = "logs/query_log.jsonl"
 
 _lock = threading.Lock()
@@ -40,9 +44,9 @@ def log_query(
     with _lock:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
-    print(
-        f"[logger] logged query | conf={confidence:.2f} | "
-        f"latency={latency_ms}ms | tools={selected_tools}"
+    logger.info(
+        "query logged",
+        confidence=round(confidence, 2), latency_ms=int(latency_ms), selected_tools=selected_tools,
     )
 
 

@@ -3,6 +3,10 @@ import math
 import os
 import time
 
+from src.observability.logging_config import get_logger
+
+logger = get_logger("embedding.embedder")
+
 EMBEDDING_MODEL = "text-embedding-3-small"
 EMBEDDING_DIM = 1536
 BATCH_SIZE = 100
@@ -32,12 +36,12 @@ def embed_batch(texts: list[str]) -> list[list[float]]:
 
     if not api_key:
         if not _path_announced:
-            print("[embedder] No OPENAI_API_KEY — using mock embeddings.")
+            logger.warning("no OPENAI_API_KEY, using mock embeddings")
             _path_announced = True
         return [mock_embed(t) for t in texts]
 
     if not _path_announced:
-        print(f"[embedder] Using OpenAI {EMBEDDING_MODEL}.")
+        logger.info("using OpenAI embeddings", model=EMBEDDING_MODEL)
         _path_announced = True
 
     try:
@@ -55,7 +59,7 @@ def embed_batch(texts: list[str]) -> list[list[float]]:
         except (RateLimitError, APIConnectionError) as e:
             if attempt == MAX_RETRIES:
                 raise
-            print(f"[embedder] Retry {attempt}/{MAX_RETRIES} after error: {e}")
+            logger.warning("embedding call retry", attempt=attempt, max_retries=MAX_RETRIES, error=str(e))
             time.sleep(RETRY_DELAY_SECONDS * attempt)
 
 

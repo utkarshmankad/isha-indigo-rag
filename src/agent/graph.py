@@ -7,11 +7,14 @@ from langgraph.graph import END, StateGraph
 
 from src.embedding.embedder import embed_batch
 from src.embedding.vector_store import QdrantVectorStore
+from src.observability.logging_config import get_logger
 from src.retrieval.hybrid_search import BM25Index, hybrid_search
 from src.retrieval.retriever import RetrievalEngine
 from src.retrieval.tool_selector import route_query
 
 load_dotenv()
+
+logger = get_logger("agent.graph")
 
 CONFIDENCE_THRESHOLD = 0.65
 MAX_ITERATIONS = 2
@@ -84,10 +87,13 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
             for tool in DGCA_TOOLS:
                 if tool not in selected:
                     selected.append(tool)
-            print(f"[select_tools] DGCA detected — force-added {DGCA_TOOLS}")
+            logger.info("DGCA detected, force-added tools", dgca_tools=DGCA_TOOLS)
 
-        print(f"[select_tools] tools={selected}, search_all={search_all}, dgca={dgca_query}")
-        print(f"[select_tools] reasoning: {route['reasoning']}")
+        logger.info(
+            "tools selected",
+            selected_tools=selected, search_all=search_all, dgca_query=dgca_query,
+            reasoning=route["reasoning"],
+        )
 
         return {
             "selected_tools": selected,
@@ -111,14 +117,16 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
         # When a specific airline is selected, always include DGCA docs for regulatory context
         airline_filter = None if airline == "all" else [airline, "dgca"]
 
-        print(f"\n[retrieve] iteration={iterations}, search_all={search_all}, airline={airline}")
+        logger.info(
+            "retrieve start", iteration=iterations, search_all=search_all, airline=airline,
+        )
 
         qvec = embed_batch([query])[0]
 
         # Confidence from cosine similarity, scoped to airline if selected
         conf_results = vector_store.query(qvec, top_k=3, airline_filter=airline_filter)
         confidence = max((r["score"] for r in conf_results), default=0.0)
-        print(f"[retrieve] confidence (max cosine)={confidence:.4f}")
+        logger.info("confidence computed", confidence=round(confidence, 4))
 
         # Hybrid search: per-tool filtered or global
         all_chunks: dict[str, dict] = {}
@@ -144,10 +152,11 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
             all_chunks.values(), key=lambda r: r["fusion_score"], reverse=True
         )[:5]
 
-        print(f"[retrieve] {len(deduped)} chunks after dedup+top5")
-        for r in deduped:
-            title = r["metadata"].get("title", "")[:60]
-            print(f"  fusion={r['fusion_score']:.4f}  score={r['score']:.4f}  {title}")
+        logger.info(
+            "retrieval deduped",
+            chunk_count=len(deduped),
+            top_scores=[round(r["fusion_score"], 4) for r in deduped],
+        )
 
         # Pre-set search_all for possible second pass
         expand_next = confidence < CONFIDENCE_THRESHOLD and iterations < MAX_ITERATIONS
@@ -164,7 +173,7 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
         chunks = state["retrieved_chunks"]
         dgca_query = state["dgca_query"]
 
-        print(f"\n[generate] building answer (dgca_query={dgca_query})")
+        logger.info("generating answer", dgca_query=dgca_query)
 
         airline = state.get("airline", "all")
         context = engine.build_context(chunks)
@@ -187,19 +196,17 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
                 latency_ms=latency_ms,
                 dgca_query=dgca_query,
             )
-        except Exception as log_err:
-            print(f"[logger] warning: {log_err}")
+        except Exception:
+            logger.warning("query log write failed", exc_info=True)
 
         return {"context": context, "answer": answer}
 
     def should_continue(state: AgentState) -> str:
         confidence = state["confidence"]
         iterations = state["iterations"]
-        if confidence >= CONFIDENCE_THRESHOLD or iterations >= MAX_ITERATIONS:
-            print(f"[router] confidence={confidence:.4f}, iterations={iterations} → generate")
-            return "generate"
-        print(f"[router] confidence={confidence:.4f}, iterations={iterations} → retrieve (expand)")
-        return "retrieve"
+        next_step = "generate" if confidence >= CONFIDENCE_THRESHOLD or iterations >= MAX_ITERATIONS else "retrieve"
+        logger.info("routing decision", confidence=round(confidence, 4), iterations=iterations, next_step=next_step)
+        return next_step
 
     workflow = StateGraph(AgentState)
     workflow.add_node("select_tools", select_tools_node)
@@ -219,9 +226,7 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
 
 
 def run_agent(query: str, graph, airline: str = "all") -> AgentState:
-    print(f"\n{'='*70}")
-    print(f"QUERY: {query} [airline={airline}]")
-    print("=" * 70)
+    logger.info("query received", query=query, airline=airline)
 
     initial_state: AgentState = {
         "query": query,
@@ -238,13 +243,12 @@ def run_agent(query: str, graph, airline: str = "all") -> AgentState:
 
     final_state = graph.invoke(initial_state)
 
-    print(f"\n{'─'*70}")
-    print(f"ANSWER:\n{final_state['answer']}")
-    print(f"{'─'*70}")
-    print(
-        f"confidence={final_state['confidence']:.4f}  "
-        f"iterations={final_state['iterations']}  "
-        f"dgca={final_state['dgca_query']}"
+    logger.info(
+        "query complete",
+        confidence=round(final_state["confidence"], 4),
+        iterations=final_state["iterations"],
+        dgca_query=final_state["dgca_query"],
+        answer_length=len(final_state["answer"]),
     )
     return final_state
 

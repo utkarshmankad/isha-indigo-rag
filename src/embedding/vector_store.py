@@ -15,6 +15,9 @@ from qdrant_client.models import (
 )
 
 from src.embedding.embedder import EMBEDDING_DIM
+from src.observability.logging_config import get_logger
+
+logger = get_logger("embedding.vector_store")
 
 _BATCH_SIZE = 100
 
@@ -37,7 +40,7 @@ class QdrantVectorStore:
                 collection_name=collection_name,
                 vectors_config=VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE),
             )
-            print(f"[vector_store] Created collection '{collection_name}' (dim={EMBEDDING_DIM}).")
+            logger.info("created collection", collection=collection_name, dim=EMBEDDING_DIM)
         else:
             info = self.client.get_collection(collection_name)
             stored_dim = info.config.params.vectors.size
@@ -47,10 +50,7 @@ class QdrantVectorStore:
                     f"expected {EMBEDDING_DIM}. Run ingest.py --reset to rebuild."
                 )
             count = info.points_count
-            print(
-                f"[vector_store] Connected to '{collection_name}' "
-                f"(dim={stored_dim}, {count} points)."
-            )
+            logger.info("connected to collection", collection=collection_name, dim=stored_dim, points=count)
         self.client.create_payload_index(
             collection_name=collection_name,
             field_name="category",

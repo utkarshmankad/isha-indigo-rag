@@ -2,7 +2,10 @@ import os
 
 from src.embedding.embedder import embed_batch
 from src.embedding.vector_store import QdrantVectorStore
+from src.observability.logging_config import get_logger
 from src.security.prompt_protection import PromptGuard
+
+logger = get_logger("retrieval.retriever")
 
 DEFAULT_TOP_K = 5
 MAX_PER_DOC = 2
@@ -72,7 +75,7 @@ class RetrievalEngine:
         candidates = [r for r in candidates if r["score"] >= self.min_score]
         discarded = before - len(candidates)
         if discarded:
-            print(f"[retriever] Discarded {discarded} results below min_score={self.min_score}")
+            logger.info("discarded low-score results", discarded=discarded, min_score=self.min_score)
 
         seen_docs: dict[str, int] = {}
         deduped: list[dict] = []
