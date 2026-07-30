@@ -8,6 +8,7 @@ from langgraph.graph import END, StateGraph
 from src.embedding.embedder import embed_batch
 from src.embedding.vector_store import QdrantVectorStore
 from src.observability.logging_config import get_logger
+from src.reliability.circuit_breaker import CircuitBreaker
 from src.retrieval.hybrid_search import BM25Index, hybrid_search
 from src.retrieval.retriever import RetrievalEngine
 from src.retrieval.tool_selector import route_query
@@ -15,6 +16,11 @@ from src.retrieval.tool_selector import route_query
 load_dotenv()
 
 logger = get_logger("agent.graph")
+
+# Trip after 5 consecutive OpenAI failures, fail fast for 30s, then probe again.
+llm_circuit_breaker = CircuitBreaker(
+    name="openai_chat_completions", failure_threshold=5, recovery_timeout_seconds=30.0,
+)
 
 CONFIDENCE_THRESHOLD = 0.65
 MAX_ITERATIONS = 2
@@ -75,15 +81,19 @@ def generate_answer(prompt: str) -> str:
     from openai import OpenAI
     client = OpenAI(api_key=openai_key)
     system_part, user_part = split_prompt(prompt)
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": system_part},
-            {"role": "user", "content": user_part},
-        ],
-        max_tokens=1024,
-    )
-    return response.choices[0].message.content or ""
+
+    def _call():
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_part},
+                {"role": "user", "content": user_part},
+            ],
+            max_tokens=1024,
+        )
+        return response.choices[0].message.content or ""
+
+    return llm_circuit_breaker.call(_call)
 
 
 def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
