@@ -48,7 +48,7 @@ PASSPORT_PATTERN = r"\b[A-Z]{1,2}\d{6,8}\b"
 # Likely attack patterns
 CURLY_BRACES_PATTERN = r"\{[^{}]*\{[^{}]*\}[^{}]*\}"  # Nested curly braces
 SQL_INJECTION_PATTERN = r"(\b(SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE|UNION|EXEC)\b|#|';|--)"
-BASH_EXEC_PATTERN = r"(`|;|\||\$(\(|\$\{|\||&|>|\$[a-z\d_])"
+BASH_EXEC_PATTERN = r"(`|;|\|\||\$\(|\$\{|&&|\$[a-zA-Z_][a-zA-Z0-9_]*)"
 
 # Forbidden words/themes
 FORBIDDEN_PATTERNS = [
@@ -86,14 +86,14 @@ class QueryValidator:
         if length < MIN_QUERY_LENGTH:
             return ValidationResult(
                 is_valid=False,
-                category=QueryConcernCategory.PROHIBITED_CONTENT,
+                category=QueryConcernCategory.PROHIBITED_CONTENT.value,
                 reason=f"Query too short (min {MIN_QUERY_LENGTH} characters)",
             )
 
         if length > MAX_QUERY_LENGTH:
             return ValidationResult(
                 is_valid=False,
-                category=QueryConcernCategory.ATTACK_ATTEMPT,
+                category=QueryConcernCategory.ATTACK_ATTEMPT.value,
                 reason=f"Query exceeds maximum length of {MAX_QUERY_LENGTH} characters",
             )
 
@@ -101,13 +101,13 @@ class QueryValidator:
             # Warning, not a failure
             return ValidationResult(
                 is_valid=True,
-                category=QueryConcernCategory.SAFE,
+                category=QueryConcernCategory.SAFE.value,
                 reason="",
                 warning=f"Query is relatively short ({length} chars). Please provide more details for better answers.",
             )
 
         return ValidationResult(
-            is_valid=True, category=QueryConcernCategory.SAFE, reason=""
+            is_valid=True, category=QueryConcernCategory.SAFE.value, reason=""
         )
 
     @classmethod
