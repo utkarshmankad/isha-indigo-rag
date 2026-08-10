@@ -1,0 +1,17 @@
+{
+  "scores": {
+    "faithfulness": 0.8267954267954266,
+    "answer_relevancy": 0.810505131198144,
+    "context_precision": 0.7168478260580692,
+    "context_recall": 0.5217391304347826
+  },
+  "gate_thresholds": {
+    "faithfulness": 0.7,
+    "answer_relevancy": 0.7,
+    "context_precision": 0.6,
+    "context_recall": 0.6
+  },
+  "refusal_correct": 3,
+  "refusal_total": 3,
+  "n_queries": 23
+}
