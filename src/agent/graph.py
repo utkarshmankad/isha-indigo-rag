@@ -24,6 +24,9 @@ llm_circuit_breaker = CircuitBreaker(
 )
 
 CONFIDENCE_THRESHOLD = 0.65
+# Below this, even after exhausting retries, retrieval found nothing usable —
+# refuse instead of asking the LLM to answer from a near-empty/irrelevant context.
+REFUSAL_FLOOR = 0.35
 MAX_ITERATIONS = 2
 DGCA_KEYWORDS = [
     "compensation", "rights", "dgca", "entitled", "cancelled flight",
@@ -65,6 +68,14 @@ def _fallback_answer(airline: str) -> str:
     return (
         "I'm having trouble generating an answer right now. "
         f"Please try again shortly, or contact {contact}."
+    )
+
+
+def _refusal_answer(airline: str) -> str:
+    contact = _FALLBACK_CONTACTS.get(airline, _FALLBACK_CONTACTS["all"])
+    return (
+        "I could not find this in the policy documents. "
+        f"Please contact {contact}."
     )
 
 
@@ -249,6 +260,26 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
         logger.info("generating answer", correlation_id=cid, dgca_query=dgca_query)
 
         airline = state.get("airline", "all")
+        confidence = state["confidence"]
+
+        if confidence < REFUSAL_FLOOR:
+            logger.info(
+                "confidence below refusal floor, skipping LLM call",
+                correlation_id=cid, confidence=round(confidence, 4), floor=REFUSAL_FLOOR,
+            )
+            answer = _refusal_answer(airline)
+            try:
+                from src.observability.logger import log_query
+                log_query(
+                    query=query, selected_tools=state["selected_tools"], retrieved_chunks=chunks,
+                    confidence=confidence, answer=answer, latency_ms=0, dgca_query=dgca_query,
+                    correlation_id=cid, expanded_search=state["iterations"] > 1,
+                    stage_error=state.get("stage_error", ""),
+                )
+            except Exception:
+                logger.warning("query log write failed", correlation_id=cid, exc_info=True)
+            return {"context": "", "answer": answer, "stage_error": ""}
+
         try:
             context = engine.build_context(chunks)
             prompt = engine.build_prompt(query, context, airline=airline)

@@ -200,8 +200,9 @@ def render_sources(chunks: list[dict]) -> None:
             cat = chunk["metadata"].get("category", "")
             emoji = CATEGORY_EMOJI.get(cat, "📋")
             title = chunk["metadata"].get("title", "Unknown")
+            doc_id = chunk["metadata"].get("source_doc_id", chunk.get("chunk_id", ""))
             score = chunk.get("score", 0.0)
-            st.markdown(f"{emoji} **{title}** — relevance: `{score:.3f}`")
+            st.markdown(f"{emoji} **{title}** (`{doc_id}`) — relevance: `{score:.3f}`")
 
 
 # Render chat history
