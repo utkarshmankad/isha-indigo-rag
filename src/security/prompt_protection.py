@@ -198,6 +198,31 @@ class PromptGuard:
 
         return prompt
 
+    # Sentinel strings ISHA's own prompt-building code uses as structural
+    # delimiters (retriever.build_prompt, graph.py's HyDE prompt). Untrusted
+    # text — conversation history in particular — must never be allowed to
+    # contain these verbatim, or it can fake a boundary and have the model
+    # treat injected text as a new system/user turn instead of quoted
+    # history (S8 security review finding).
+    _PROMPT_DELIMITERS = (
+        "USER QUESTION:",
+        "PRIOR CONVERSATION",
+        "CONTEXT:",
+        "SYSTEM:",
+    )
+
+    @classmethod
+    def neutralize_delimiters(cls, text: str) -> str:
+        """Break any occurrence of ISHA's own prompt delimiter strings so
+        untrusted text (conversation history) can't forge a boundary.
+        Case-insensitive; inserts a zero-width-safe space so the string is
+        still readable but no longer matches the literal sentinel.
+        """
+        result = text
+        for delim in cls._PROMPT_DELIMITERS:
+            result = re.sub(re.escape(delim), lambda m: m.group(0)[0] + " " + m.group(0)[1:], result, flags=re.IGNORECASE)
+        return result
+
     @classmethod
     def is_extraction_attempt(cls, query: str) -> bool:
         """

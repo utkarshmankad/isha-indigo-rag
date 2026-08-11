@@ -13,6 +13,7 @@ from src.reliability.circuit_breaker import CircuitBreaker
 from src.retrieval.hybrid_search import BM25Index, hybrid_search
 from src.retrieval.retriever import RetrievalEngine
 from src.retrieval.tool_selector import route_query
+from src.security.prompt_protection import PromptGuard
 
 load_dotenv()
 
@@ -79,10 +80,15 @@ def _last_user_turn(history: list[dict[str, str]]) -> str:
     (S7-T2) originally only reached the final generation prompt; a short
     follow-up with no topic keywords of its own still failed retrieval
     entirely, which defeats the point of remembering the conversation.
+
+    Delimiter-neutralized before returning: this text gets concatenated
+    into both the tool-routing input and the HyDE LLM prompt below, so it
+    must not be able to forge ISHA's own prompt sentinel strings (S8
+    security review finding).
     """
     for turn in reversed(history):
         if turn.get("role") == "user":
-            return turn.get("content", "")
+            return PromptGuard.neutralize_delimiters(turn.get("content", ""))
     return ""
 
 
