@@ -109,6 +109,35 @@ def health() -> dict:
     return {"status": "ok", "pipeline_ready": "graph" in _pipeline}
 
 
+class AdminMetricsResponse(BaseModel):
+    airline: str
+    query_count: int
+    unanswered_count: int
+    unanswered_rate: float
+    avg_confidence: float
+    estimated_cost_usd: float
+
+
+@app.get("/v1/admin/metrics", response_model=AdminMetricsResponse)
+def admin_metrics(tenant: TenantConfig = Depends(get_tenant)) -> AdminMetricsResponse:
+    """API-side counterpart to the Streamlit sidebar's admin dashboard
+    (Sprint 5) — an API-only tenant (website widget, Slack app, anything
+    that only ever talks to this service, never opens the Streamlit app)
+    had no way to see its own usage metrics until this endpoint existed.
+    """
+    from src.observability.admin_metrics import compute_tenant_metrics
+
+    m = compute_tenant_metrics(tenant.airline)
+    return AdminMetricsResponse(
+        airline=m.airline,
+        query_count=m.query_count,
+        unanswered_count=m.unanswered_count,
+        unanswered_rate=m.unanswered_rate,
+        avg_confidence=m.avg_confidence,
+        estimated_cost_usd=m.estimated_cost_usd,
+    )
+
+
 @app.post("/v1/query", response_model=QueryResponse)
 def query(req: QueryRequest, tenant: TenantConfig = Depends(get_tenant)) -> QueryResponse:
     if "graph" not in _pipeline:
