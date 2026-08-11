@@ -53,6 +53,7 @@ class AgentState(TypedDict):
     dgca_query: bool
     stage_error: str
     correlation_id: str
+    history: list[dict[str, str]]
 
 
 _FALLBACK_CONTACTS = {
@@ -69,6 +70,20 @@ def _fallback_answer(airline: str) -> str:
         "I'm having trouble generating an answer right now. "
         f"Please try again shortly, or contact {contact}."
     )
+
+
+def _last_user_turn(history: list[dict[str, str]]) -> str:
+    """Most recent prior user message, if any — used to give short follow-up
+    queries ("what about international flights?") enough context for tool
+    routing and retrieval to find the right documents. Conversation memory
+    (S7-T2) originally only reached the final generation prompt; a short
+    follow-up with no topic keywords of its own still failed retrieval
+    entirely, which defeats the point of remembering the conversation.
+    """
+    for turn in reversed(history):
+        if turn.get("role") == "user":
+            return turn.get("content", "")
+    return ""
 
 
 def _refusal_answer(airline: str) -> str:
@@ -116,13 +131,15 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
     def select_tools_node(state: AgentState) -> dict:
         query = state["query"]
         cid = state["correlation_id"]
+        hist_snippet = _last_user_turn(state.get("history", []))
+        routing_input = f"{hist_snippet} {query}".strip() if hist_snippet else query
 
         try:
-            route = route_query(query)
+            route = route_query(routing_input)
             selected = list(route["selected_tools"])
             search_all = route["search_all"]
 
-            q_lower = query.lower()
+            q_lower = routing_input.lower()
             dgca_query = any(kw.lower() in q_lower for kw in DGCA_KEYWORDS)
 
             if dgca_query:
@@ -169,6 +186,10 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
         search_all = state["search_all"]
         selected_tools = state["selected_tools"]
         airline = state.get("airline", "all")
+        hist_snippet = _last_user_turn(state.get("history", []))
+        # Context-enriched text for embedding only — BM25 keyword search
+        # below still uses the raw `query` untouched.
+        query_with_context = f"{hist_snippet} {query}".strip() if hist_snippet else query
 
         # When a specific airline is selected, always include DGCA docs for regulatory context
         airline_filter = None if airline == "all" else [airline, "dgca"]
@@ -179,8 +200,34 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
 
         stage_error = ""
 
+        # HyDE (S7-T1): on the retry pass — the first attempt already scored
+        # below CONFIDENCE_THRESHOLD — generate a hypothetical policy-style
+        # passage and embed that instead of the raw (often vague) query.
+        # Hypothetical answers tend to land closer to real policy text in
+        # embedding space than short questions do. BM25 keyword matching
+        # still uses the raw query below; only the vector side changes.
+        embed_source = query_with_context
+        if iterations > 1:
+            try:
+                hyde_prompt = (
+                    "Write a short, plausible-sounding passage (2-3 sentences) that "
+                    "could plausibly appear in an airline policy document answering "
+                    "this customer support question. Be specific and confident — "
+                    "don't hedge or say you don't know. This text is only used to "
+                    "improve document search and is never shown to the user."
+                    f"\n\nUSER QUESTION: {query_with_context}"
+                )
+                embed_source = generate_answer(hyde_prompt)
+                logger.info("HyDE expansion applied", correlation_id=cid, iteration=iterations)
+            except Exception:
+                logger.warning(
+                    "HyDE expansion failed, falling back to raw query",
+                    correlation_id=cid, exc_info=True,
+                )
+                embed_source = query_with_context
+
         try:
-            qvec = embed_batch([query])[0]
+            qvec = embed_batch([embed_source])[0]
         except Exception:
             # Embedding stage failed: no vector, so retrieval can't run this pass.
             logger.error("embedding stage failed", correlation_id=cid, exc_info=True)
@@ -282,7 +329,7 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
 
         try:
             context = engine.build_context(chunks)
-            prompt = engine.build_prompt(query, context, airline=airline)
+            prompt = engine.build_prompt(query, context, airline=airline, history=state.get("history"))
             if dgca_query:
                 prompt = prompt + DGCA_INSTRUCTION
         except Exception:
@@ -346,7 +393,10 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
     return workflow.compile()
 
 
-def run_agent(query: str, graph, airline: str = "all", correlation_id: str | None = None) -> AgentState:
+def run_agent(
+    query: str, graph, airline: str = "all", correlation_id: str | None = None,
+    history: list[dict[str, str]] | None = None,
+) -> AgentState:
     cid = correlation_id or str(uuid.uuid4())
     logger.info("query received", correlation_id=cid, query=query, airline=airline)
 
@@ -363,6 +413,7 @@ def run_agent(query: str, graph, airline: str = "all", correlation_id: str | Non
         "dgca_query": False,
         "stage_error": "",
         "correlation_id": cid,
+        "history": history or [],
     }
 
     final_state = graph.invoke(initial_state)
@@ -379,12 +430,15 @@ def run_agent(query: str, graph, airline: str = "all", correlation_id: str | Non
     return final_state
 
 
-def run_agent_for_tenant(query: str, graph, tenant, correlation_id: str | None = None) -> AgentState:
+def run_agent_for_tenant(
+    query: str, graph, tenant, correlation_id: str | None = None,
+    history: list[dict[str, str]] | None = None,
+) -> AgentState:
     """Tenant-scoped entry point (S4-T2): airline comes from the authenticated
     tenant, not a caller-supplied argument, so a tenant can never widen its
     own scope by passing a different `airline` value.
     """
-    return run_agent(query, graph, airline=tenant.airline, correlation_id=correlation_id)
+    return run_agent(query, graph, airline=tenant.airline, correlation_id=correlation_id, history=history)
 
 
 if __name__ == "__main__":

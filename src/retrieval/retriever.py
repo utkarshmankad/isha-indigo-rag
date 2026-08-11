@@ -10,6 +10,7 @@ logger = get_logger("retrieval.retriever")
 DEFAULT_TOP_K = 5
 MAX_PER_DOC = 2
 MAX_CONTEXT_CHARS = 3000
+MAX_HISTORY_TURNS = 4
 
 # Calibrated 2026-06-12: relevant queries scored 0.62–0.77; irrelevant
 # ("capital of France") topped at 0.15. Threshold at 0.35 sits midway,
@@ -45,7 +46,10 @@ def _build_system_prompt(context: str, airline: str = "all") -> str:
         "- If multiple airlines' policies are in the context, clearly attribute each point to the relevant airline.\n"
         f'- If the answer cannot be found in the provided context, say: '
         f'"I could not find this in the policy documents. Please contact {contact}."\n'
-        "- Do not speculate or use outside knowledge.\n\n"
+        "- Do not speculate or use outside knowledge.\n"
+        "- Respond in the same language the user's question was written in — if it's "
+        "in Hindi (Devanagari script) or Hinglish, answer in Hindi; otherwise answer "
+        "in English. Keep policy terms (fare class names, form names) untranslated.\n\n"
         f"CONTEXT:\n{context}"
     )
 
@@ -104,8 +108,20 @@ class RetrievalEngine:
             full = full[:MAX_CONTEXT_CHARS] + "\n[context truncated]"
         return full
 
-    def build_prompt(self, query: str, context: str, airline: str = "all") -> str:
+    def build_prompt(
+        self, query: str, context: str, airline: str = "all",
+        history: list[dict[str, str]] | None = None,
+    ) -> str:
         system = _build_system_prompt(context=context, airline=airline)
+        if history:
+            # Last few turns only — full history would blow the context budget
+            # and isn't needed for the "what about international flights?"
+            # style follow-up this is meant to support.
+            turns = "\n".join(
+                f"{'User' if h['role'] == 'user' else 'Assistant'}: {h['content']}"
+                for h in history[-MAX_HISTORY_TURNS:]
+            )
+            system += f"\n\nPRIOR CONVERSATION (for context on follow-up questions):\n{turns}"
         return f"{system}\n\nUSER QUESTION: {query}"
 
 

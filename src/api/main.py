@@ -70,8 +70,14 @@ def init_app_state() -> None:
     _pipeline["graph"] = build_graph(chunks, store)
 
 
+class HistoryTurn(BaseModel):
+    role: str = Field(..., pattern="^(user|assistant)$")
+    content: str = Field(..., max_length=2000)
+
+
 class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=2000)
+    history: list[HistoryTurn] = Field(default_factory=list, max_length=10)
 
 
 class SourceOut(BaseModel):
@@ -152,7 +158,10 @@ def query(req: QueryRequest, tenant: TenantConfig = Depends(get_tenant)) -> Quer
     correlation_id = str(uuid.uuid4())
     logger.info("api query received", tenant=tenant.tenant_id, correlation_id=correlation_id)
 
-    state = run_agent_for_tenant(req.query, _pipeline["graph"], tenant, correlation_id=correlation_id)
+    history = [h.model_dump() for h in req.history]
+    state = run_agent_for_tenant(
+        req.query, _pipeline["graph"], tenant, correlation_id=correlation_id, history=history,
+    )
 
     return QueryResponse(
         answer=state["answer"],
