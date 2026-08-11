@@ -1,0 +1,100 @@
+<!--
+  ISHA embeddable chat widget (S6-T2).
+
+  Drop this file's <script> block onto any airline's website (adjusting
+  API_BASE and API_KEY below) to get a floating chat bubble that talks to
+  the FastAPI wrapper (src/api/main.py). Self-contained, no build step,
+  no external dependencies — deliberately simple since it's a reference
+  implementation for airlines to adapt, not a shipped product widget.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ISHA Widget Demo</title>
+<style>
+  #isha-bubble {
+    position: fixed; bottom: 20px; right: 20px; width: 56px; height: 56px;
+    border-radius: 50%; background: #003580; color: #fff; border: none;
+    font-size: 24px; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,.3);
+  }
+  #isha-panel {
+    position: fixed; bottom: 88px; right: 20px; width: 340px; max-height: 480px;
+    background: #fff; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,.25);
+    display: none; flex-direction: column; overflow: hidden; font-family: sans-serif;
+  }
+  #isha-panel.open { display: flex; }
+  #isha-header { background: #003580; color: #fff; padding: 12px 16px; font-weight: bold; }
+  #isha-messages { flex: 1; overflow-y: auto; padding: 12px; font-size: 14px; }
+  #isha-messages .msg { margin-bottom: 10px; }
+  #isha-messages .user { text-align: right; color: #003580; }
+  #isha-messages .assistant { color: #222; }
+  #isha-input-row { display: flex; border-top: 1px solid #eee; }
+  #isha-input { flex: 1; border: none; padding: 10px; font-size: 14px; }
+  #isha-send { border: none; background: #003580; color: #fff; padding: 0 16px; cursor: pointer; }
+</style>
+</head>
+<body>
+
+<button id="isha-bubble" aria-label="Open ISHA chat">✈️</button>
+<div id="isha-panel">
+  <div id="isha-header">ISHA — Ask about your booking</div>
+  <div id="isha-messages"></div>
+  <div id="isha-input-row">
+    <input id="isha-input" type="text" placeholder="Ask a question…">
+    <button id="isha-send">Send</button>
+  </div>
+</div>
+
+<script>
+(function () {
+  // Adjust these two for the embedding airline's own deployment.
+  const API_BASE = "http://localhost:8080";
+  const API_KEY = "REPLACE_WITH_TENANT_API_KEY";
+
+  const bubble = document.getElementById("isha-bubble");
+  const panel = document.getElementById("isha-panel");
+  const messages = document.getElementById("isha-messages");
+  const input = document.getElementById("isha-input");
+  const send = document.getElementById("isha-send");
+
+  bubble.addEventListener("click", () => panel.classList.toggle("open"));
+
+  function addMessage(role, text) {
+    const div = document.createElement("div");
+    div.className = "msg " + role;
+    div.textContent = text;
+    messages.appendChild(div);
+    messages.scrollTop = messages.scrollHeight;
+  }
+
+  async function sendQuery() {
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = "";
+    addMessage("user", text);
+    addMessage("assistant", "…");
+    const placeholder = messages.lastChild;
+
+    try {
+      const res = await fetch(API_BASE + "/v1/query", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-API-Key": API_KEY },
+        body: JSON.stringify({ query: text }),
+      });
+      const data = await res.json();
+      placeholder.textContent = res.ok
+        ? data.answer
+        : "Error: " + (data.detail || res.statusText);
+    } catch (err) {
+      placeholder.textContent = "Network error — could not reach ISHA.";
+    }
+  }
+
+  send.addEventListener("click", sendQuery);
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") sendQuery(); });
+})();
+</script>
+
+</body>
+</html>

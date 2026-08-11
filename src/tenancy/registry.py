@@ -61,3 +61,17 @@ def authenticate(airline: str, api_key: str) -> TenantConfig | None:
     if secrets.compare_digest(tenant.api_key, api_key):
         return tenant
     return None
+
+
+def authenticate_by_key(api_key: str) -> TenantConfig | None:
+    """Resolve a tenant from an API key alone (S6: API callers present only
+    a key, not an airline — the key itself determines the tenant/airline).
+    Still constant-time per comparison; scans all tenants since the caller
+    hasn't told us which one to check.
+    """
+    if not api_key:
+        return None
+    for tenant in TENANTS.values():
+        if secrets.compare_digest(tenant.api_key, api_key):
+            return tenant
+    return None
