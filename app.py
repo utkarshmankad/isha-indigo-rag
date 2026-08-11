@@ -335,14 +335,22 @@ if query:
         with st.chat_message("assistant"):
             with st.spinner("Searching airline policy documents…"):
                 try:
+                    # Prior turns for conversation memory (S7-T2) — exclude the
+                    # just-appended current user turn, which is the last entry.
+                    history = [
+                        {"role": m["role"], "content": m["content"]}
+                        for m in st.session_state["messages"][:-1]
+                    ]
                     if tenant is not None:
                         from src.agent.graph import run_agent_for_tenant
                         state = run_agent_for_tenant(
                             query, pipeline["graph"], tenant, correlation_id=correlation_id,
+                            history=history,
                         )
                     else:
                         state = pipeline["run_agent"](
                             query, pipeline["graph"], airline=airline, correlation_id=correlation_id,
+                            history=history,
                         )
                     answer: str = state["answer"]
                     chunks: list[dict] = state["retrieved_chunks"]
