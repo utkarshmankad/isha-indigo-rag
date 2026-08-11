@@ -93,3 +93,21 @@ def test_rate_limit_enforced_per_tenant(client):
             "/v1/query", json={"query": "what is the baggage allowance"}, headers={"X-API-Key": "indigo-secret-key"},
         )
     assert resp.status_code == 429
+
+
+def test_admin_metrics_requires_valid_key(client):
+    resp = client.get("/v1/admin/metrics", headers={"X-API-Key": "wrong-key"})
+    assert resp.status_code == 401
+
+
+def test_admin_metrics_scoped_to_own_tenant(client):
+    fake_logs = [
+        {"airline": "indigo", "confidence": 0.8, "refused": False, "fallback_triggered": False},
+        {"airline": "spicejet", "confidence": 0.9, "refused": False, "fallback_triggered": False},
+    ]
+    with patch("src.observability.admin_metrics.read_logs", return_value=fake_logs):
+        resp = client.get("/v1/admin/metrics", headers={"X-API-Key": "indigo-secret-key"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["airline"] == "indigo"
+    assert body["query_count"] == 1  # not 2 — spicejet's entry must not leak in
