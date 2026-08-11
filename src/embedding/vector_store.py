@@ -124,6 +124,23 @@ class QdrantVectorStore:
             )
         return hits
 
+    def query_for_tenant(
+        self,
+        tenant,
+        query_vector: list[float],
+        top_k: int = 5,
+        filters: dict | None = None,
+    ) -> list[dict]:
+        """Tenant-scoped query — always filters to the tenant's airline (plus
+        shared DGCA regulatory docs). Unlike `query()`, there is no way to
+        pass `airline_filter=None` here: a tenant can never see another
+        tenant's chunks, even if a caller forgets to scope the request.
+        """
+        return self.query(
+            query_vector, top_k=top_k, filters=filters,
+            airline_filter=[tenant.airline, "dgca"],
+        )
+
     def recreate_collection(self) -> None:
         self.client.delete_collection(self.collection_name)
         self.client.create_collection(

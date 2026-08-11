@@ -378,6 +378,14 @@ def run_agent(query: str, graph, airline: str = "all", correlation_id: str | Non
     return final_state
 
 
+def run_agent_for_tenant(query: str, graph, tenant, correlation_id: str | None = None) -> AgentState:
+    """Tenant-scoped entry point (S4-T2): airline comes from the authenticated
+    tenant, not a caller-supplied argument, so a tenant can never widen its
+    own scope by passing a different `airline` value.
+    """
+    return run_agent(query, graph, airline=tenant.airline, correlation_id=correlation_id)
+
+
 if __name__ == "__main__":
     from data.indigo_documents import DOCUMENTS
     from src.ingestion.chunker import ingest_all

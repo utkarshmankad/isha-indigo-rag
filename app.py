@@ -149,6 +149,21 @@ with st.sidebar:
     )
     selected_airline = AIRLINE_OPTIONS[airline_label]
 
+    tenant = None
+    if selected_airline != "all":
+        from src.tenancy.registry import authenticate
+
+        st.markdown("**Tenant API key** (required for a single-airline view):")
+        api_key_input = st.text_input(
+            "Tenant API key", type="password", label_visibility="collapsed",
+            key=f"tenant_key_{selected_airline}",
+        )
+        tenant = authenticate(selected_airline, api_key_input) if api_key_input else None
+        if api_key_input and tenant is None:
+            st.error("🔒 Invalid API key for this airline.")
+        elif tenant is not None:
+            st.success(f"🔓 Authenticated as {tenant.display_name}")
+
     st.divider()
 
     st.markdown("**Passengers often ask:**")
@@ -230,9 +245,17 @@ if query:
         st.markdown(query)
     st.session_state["messages"].append({"role": "user", "content": query})
 
+    if selected_airline != "all" and tenant is None:
+        logger.warning("query blocked: unauthenticated tenant-scoped request", airline=selected_airline)
+        with st.chat_message("assistant"):
+            st.warning("🔒 Enter a valid tenant API key in the sidebar to query this airline's data.")
+        st.session_state["messages"].append({
+            "role": "assistant",
+            "content": "Enter a valid tenant API key in the sidebar to query this airline's data.",
+        })
+        is_valid = False
     # Rate limit check — reject before spending any retrieval/LLM cost.
-    rate_result = RateLimiter.check_rate_limit()
-    if not rate_result.is_allowed:
+    elif not (rate_result := RateLimiter.check_rate_limit()).is_allowed:
         logger.warning(
             "query blocked by rate limit",
             reason=rate_result.reason, retry_after_seconds=rate_result.retry_after_seconds,
@@ -273,9 +296,15 @@ if query:
         with st.chat_message("assistant"):
             with st.spinner("Searching airline policy documents…"):
                 try:
-                    state = pipeline["run_agent"](
-                        query, pipeline["graph"], airline=airline, correlation_id=correlation_id,
-                    )
+                    if tenant is not None:
+                        from src.agent.graph import run_agent_for_tenant
+                        state = run_agent_for_tenant(
+                            query, pipeline["graph"], tenant, correlation_id=correlation_id,
+                        )
+                    else:
+                        state = pipeline["run_agent"](
+                            query, pipeline["graph"], airline=airline, correlation_id=correlation_id,
+                        )
                     answer: str = state["answer"]
                     chunks: list[dict] = state["retrieved_chunks"]
                     conf: float = state.get("confidence", 0.0)
