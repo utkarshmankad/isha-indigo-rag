@@ -13,6 +13,7 @@ calls an LLM as judge, so this hits real APIs — not run in unit tests).
 """
 import argparse
 import json
+import os
 import sys
 import types
 from pathlib import Path
@@ -22,6 +23,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# ragas phones home to an analytics endpoint via a background batcher
+# (ragas._analytics) that flushes on an interval and at process exit. In
+# GitHub Actions' network sandbox that call appears to blackhole rather than
+# fail fast, hanging the whole job for 40+ minutes with zero output after
+# "Scoring with RAGAS" — never reproduced locally where egress is open. Set
+# before importing ragas anywhere (including via the vertexai stub below).
+os.environ.setdefault("RAGAS_DO_NOT_TRACK", "true")
 
 
 def _patch_ragas_vertexai_import() -> None:
@@ -101,6 +110,7 @@ def score_with_ragas(records: list[dict]) -> dict:
         context_recall,
         faithfulness,
     )
+    from ragas.run_config import RunConfig
 
     dataset = Dataset.from_list([
         {
@@ -117,10 +127,14 @@ def score_with_ragas(records: list[dict]) -> dict:
     # call — pass a LangChain-wrapped embedder explicitly to sidestep that.
     embeddings = LangchainEmbeddingsWrapper(OpenAIEmbeddings())
 
+    # Explicit timeout as defense-in-depth: without it a stuck per-item call
+    # (network or otherwise) can hang the whole job with no error, which is
+    # exactly what the untracked ragas analytics flush was doing in CI.
     result = evaluate(
         dataset,
         metrics=[faithfulness, answer_relevancy, context_precision, context_recall],
         embeddings=embeddings,
+        run_config=RunConfig(timeout=120, max_retries=3),
     )
     scores_df = result.to_pandas()
     metric_names = ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]
