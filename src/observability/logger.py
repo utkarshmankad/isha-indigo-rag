@@ -24,6 +24,8 @@ def log_query(
     correlation_id: str = "",
     expanded_search: bool = False,
     stage_error: str = "",
+    airline: str = "all",
+    refused: bool = False,
 ) -> None:
     Path(LOG_FILE).parent.mkdir(parents=True, exist_ok=True)
     sources = [
@@ -52,6 +54,8 @@ def log_query(
         "expanded_search": expanded_search,
         "stage_error": stage_error,
         "fallback_triggered": fallback_triggered,
+        "airline": airline,
+        "refused": refused,
     }
     with _lock:
         with open(LOG_FILE, "a", encoding="utf-8") as f:

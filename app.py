@@ -116,7 +116,7 @@ def init_pipeline() -> dict:
     all_docs = INDIGO_DOCS + AI_DOCS + SJ_DOCS + DGCA_DOCS
     chunks = ingest_all(all_docs)
     graph = build_graph(chunks, store)
-    return {"graph": graph, "run_agent": run_agent, "n_chunks": n}
+    return {"graph": graph, "run_agent": run_agent, "n_chunks": n, "store": store}
 
 
 try:
@@ -163,6 +163,45 @@ with st.sidebar:
             st.error("🔒 Invalid API key for this airline.")
         elif tenant is not None:
             st.success(f"🔓 Authenticated as {tenant.display_name}")
+
+        if tenant is not None:
+            with st.expander("📈 Admin dashboard"):
+                from src.observability.admin_metrics import compute_tenant_metrics
+
+                metrics = compute_tenant_metrics(tenant.airline)
+                st.metric("Total queries logged", metrics.query_count)
+                st.metric("Unanswered rate", f"{metrics.unanswered_rate:.1%}")
+                st.metric("Avg confidence", f"{metrics.avg_confidence:.2f}")
+                st.metric("Est. cost (flat estimate)", f"${metrics.estimated_cost_usd:.4f}")
+                st.caption(
+                    "Cost is a flat per-query estimate, not measured OpenAI spend — "
+                    "no token-usage tracking wired up yet."
+                )
+
+            with st.expander("📤 Upload a policy document"):
+                from src.ingestion.self_serve import UploadValidationError, ingest_document_for_tenant
+
+                up_title = st.text_input("Document title", key="upload_title")
+                up_category = st.selectbox(
+                    "Category", options=list(CATEGORY_EMOJI.keys()), key="upload_category",
+                )
+                up_content = st.text_area("Document text", height=150, key="upload_content")
+                if st.button("Ingest document", key="upload_submit"):
+                    try:
+                        result = ingest_document_for_tenant(
+                            tenant, up_title, up_content, up_category, pipeline["store"],
+                        )
+                        st.success(
+                            f"Ingested `{result['doc_id']}` — {result['chunk_count']} chunks. "
+                            "Available immediately for semantic search. Note: exact-keyword "
+                            "(BM25) matching won't include it until the app is restarted, since "
+                            "that index is built from the static document set, not Qdrant."
+                        )
+                    except UploadValidationError as e:
+                        st.error(f"❌ {e}")
+                    except Exception:
+                        logger.error("self-serve ingestion failed", tenant=tenant.tenant_id, exc_info=True)
+                        st.error("❌ Ingestion failed. Check logs for details.")
 
     st.divider()
 

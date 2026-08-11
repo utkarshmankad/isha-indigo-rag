@@ -274,7 +274,7 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
                     query=query, selected_tools=state["selected_tools"], retrieved_chunks=chunks,
                     confidence=confidence, answer=answer, latency_ms=0, dgca_query=dgca_query,
                     correlation_id=cid, expanded_search=state["iterations"] > 1,
-                    stage_error=state.get("stage_error", ""),
+                    stage_error=state.get("stage_error", ""), airline=airline, refused=True,
                 )
             except Exception:
                 logger.warning("query log write failed", correlation_id=cid, exc_info=True)
@@ -311,6 +311,7 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
                 correlation_id=cid,
                 expanded_search=state["iterations"] > 1,
                 stage_error=state.get("stage_error", ""),
+                airline=airline, refused=False,
             )
         except Exception:
             logger.warning("query log write failed", correlation_id=cid, exc_info=True)
