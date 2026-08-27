@@ -85,6 +85,8 @@ class SourceOut(BaseModel):
     title: str
     category: str
     score: float
+    source_doc_id: str
+    section: int | None = None
 
 
 class QueryResponse(BaseModel):
@@ -179,6 +181,10 @@ def query(
                 title=c["metadata"].get("title", ""),
                 category=c["metadata"].get("category", ""),
                 score=round(c.get("score", 0.0), 3),
+                source_doc_id=c["metadata"].get("source_doc_id", ""),
+                section=c["metadata"]["chunk_index"] + 1
+                if isinstance(c["metadata"].get("chunk_index"), int)
+                else None,
             )
             for c in state["retrieved_chunks"]
         ],

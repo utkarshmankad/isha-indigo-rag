@@ -40,7 +40,9 @@ def _build_system_prompt(context: str, airline: str = "all") -> str:
     return (
         f"You are a virtual customer support agent specialising in {label} airline policies. "
         "Answer the user's question using ONLY the context passages provided below. Rules:\n"
-        "- Cite documents by name when using their content.\n"
+        "- Cite documents by name when using their content, and include the "
+        "matching [Source N] marker from the context so the claim can be "
+        "traced back to a specific passage.\n"
         "- Use bullet points for any step-by-step instructions.\n"
         "- State all amounts in INR (₹) for Indian routes.\n"
         "- If multiple airlines' policies are in the context, clearly attribute each point to the relevant airline.\n"
@@ -95,10 +97,12 @@ class RetrievalEngine:
         blocks: list[str] = []
         for i, r in enumerate(results, 1):
             m = r["metadata"]
+            section = m.get("chunk_index")
+            section_label = f" | Section: {section + 1}" if isinstance(section, int) else ""
             header = (
                 f"[Source {i}] {m.get('title', 'Unknown')} "
                 f"({m.get('doc_type', '')} | {m.get('category', '')} | "
-                f"Updated: {m.get('last_updated', '')}) — "
+                f"Updated: {m.get('last_updated', '')}{section_label}) — "
                 f"Relevance: {r['score']:.3f}"
             )
             blocks.append(f"{header}\n{r['text']}")

@@ -73,6 +73,7 @@ class QdrantVectorStore:
                 payload = {
                     "text": chunk["text"],
                     "chunk_id": chunk["chunk_id"],
+                    "chunk_index": chunk.get("chunk_index"),
                     **chunk["metadata"],
                 }
                 points.append(
