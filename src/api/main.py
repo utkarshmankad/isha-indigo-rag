@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 from src.agent.graph import run_agent_for_tenant
 from src.billing.stripe_usage import record_query_usage
+from src.escalation.queue import list_pending_escalations, resolve_escalation
 from src.observability.logging_config import get_logger
 from src.security.validator import QueryValidator
 from src.tenancy.registry import TenantConfig, authenticate_by_key
@@ -145,6 +146,43 @@ def admin_metrics(tenant: TenantConfig = Depends(get_tenant)) -> AdminMetricsRes
         avg_confidence=m.avg_confidence,
         estimated_cost_usd=m.estimated_cost_usd,
     )
+
+
+class EscalationOut(BaseModel):
+    escalation_id: str
+    correlation_id: str
+    timestamp: str
+    query: str
+    confidence: float
+    status: str
+
+
+@app.get("/v1/admin/escalations", response_model=list[EscalationOut])
+def admin_escalations(tenant: TenantConfig = Depends(get_tenant)) -> list[EscalationOut]:
+    """Pending human-review queue for the calling tenant only — a low-
+    confidence/refused query never surfaces here for another airline."""
+    entries = list_pending_escalations(tenant.airline)
+    return [
+        EscalationOut(
+            escalation_id=e["escalation_id"],
+            correlation_id=e["correlation_id"],
+            timestamp=e["timestamp"],
+            query=e["query"],
+            confidence=e["confidence"],
+            status=e["status"],
+        )
+        for e in entries
+    ]
+
+
+@app.post("/v1/admin/escalations/{escalation_id}/resolve")
+def admin_resolve_escalation(
+    escalation_id: str, tenant: TenantConfig = Depends(get_tenant),
+) -> dict:
+    resolved = resolve_escalation(escalation_id, tenant.airline)
+    if not resolved:
+        raise HTTPException(status_code=404, detail="Escalation not found for this tenant.")
+    return {"escalation_id": escalation_id, "status": "resolved"}
 
 
 @app.post("/v1/query", response_model=QueryResponse)

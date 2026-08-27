@@ -139,3 +139,50 @@ def test_admin_metrics_scoped_to_own_tenant(client):
     body = resp.json()
     assert body["airline"] == "indigo"
     assert body["query_count"] == 1  # not 2 — spicejet's entry must not leak in
+
+
+def test_admin_escalations_requires_valid_key(client):
+    resp = client.get("/v1/admin/escalations", headers={"X-API-Key": "wrong-key"})
+    assert resp.status_code == 401
+
+
+def test_admin_escalations_scoped_to_own_tenant(client, tmp_path, monkeypatch):
+    import src.escalation.queue as escalation_queue
+
+    monkeypatch.setattr(escalation_queue, "ESCALATION_FILE", str(tmp_path / "escalations.jsonl"))
+    escalation_queue.enqueue_escalation("q1", "indigo", 0.1, "corr-1")
+    escalation_queue.enqueue_escalation("q2", "spicejet", 0.1, "corr-2")
+
+    resp = client.get("/v1/admin/escalations", headers={"X-API-Key": "indigo-secret-key"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["query"] == "q1"
+
+
+def test_admin_resolve_escalation(client, tmp_path, monkeypatch):
+    import src.escalation.queue as escalation_queue
+
+    monkeypatch.setattr(escalation_queue, "ESCALATION_FILE", str(tmp_path / "escalations.jsonl"))
+    escalation_id = escalation_queue.enqueue_escalation("q1", "indigo", 0.1, "corr-1")
+
+    resp = client.post(
+        f"/v1/admin/escalations/{escalation_id}/resolve", headers={"X-API-Key": "indigo-secret-key"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "resolved"
+
+    follow_up = client.get("/v1/admin/escalations", headers={"X-API-Key": "indigo-secret-key"})
+    assert follow_up.json() == []
+
+
+def test_admin_resolve_escalation_cross_tenant_rejected(client, tmp_path, monkeypatch):
+    import src.escalation.queue as escalation_queue
+
+    monkeypatch.setattr(escalation_queue, "ESCALATION_FILE", str(tmp_path / "escalations.jsonl"))
+    escalation_id = escalation_queue.enqueue_escalation("q1", "indigo", 0.1, "corr-1")
+
+    resp = client.post(
+        f"/v1/admin/escalations/{escalation_id}/resolve", headers={"X-API-Key": "sj-secret-key"},
+    )
+    assert resp.status_code == 404
