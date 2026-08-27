@@ -331,6 +331,13 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
                 )
             except Exception:
                 logger.warning("query log write failed", correlation_id=cid, exc_info=True)
+
+            try:
+                from src.escalation.queue import enqueue_escalation
+                enqueue_escalation(query=query, airline=airline, confidence=confidence, correlation_id=cid)
+            except Exception:
+                logger.warning("escalation enqueue failed", correlation_id=cid, exc_info=True)
+
             return {"context": "", "answer": answer, "stage_error": ""}
 
         try:

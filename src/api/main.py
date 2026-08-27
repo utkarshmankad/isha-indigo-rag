@@ -15,11 +15,12 @@ from contextlib import asynccontextmanager
 from threading import Lock
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from src.agent.graph import run_agent_for_tenant
+from src.billing.stripe_usage import record_query_usage
 from src.observability.logging_config import get_logger
 from src.security.validator import QueryValidator
 from src.tenancy.registry import TenantConfig, authenticate_by_key
@@ -145,7 +146,9 @@ def admin_metrics(tenant: TenantConfig = Depends(get_tenant)) -> AdminMetricsRes
 
 
 @app.post("/v1/query", response_model=QueryResponse)
-def query(req: QueryRequest, tenant: TenantConfig = Depends(get_tenant)) -> QueryResponse:
+def query(
+    req: QueryRequest, background_tasks: BackgroundTasks, tenant: TenantConfig = Depends(get_tenant),
+) -> QueryResponse:
     if "graph" not in _pipeline:
         raise HTTPException(status_code=503, detail="Pipeline not ready.")
 
@@ -162,6 +165,11 @@ def query(req: QueryRequest, tenant: TenantConfig = Depends(get_tenant)) -> Quer
     state = run_agent_for_tenant(
         req.query, _pipeline["graph"], tenant, correlation_id=correlation_id, history=history,
     )
+
+    # Billing is a side effect, reported after the response is prepared —
+    # runs after the response is sent (BackgroundTasks), never adds latency
+    # to the actual answer and never fails the request on a billing error.
+    background_tasks.add_task(record_query_usage, tenant.tenant_id, correlation_id)
 
     return QueryResponse(
         answer=state["answer"],
