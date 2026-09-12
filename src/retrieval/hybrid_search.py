@@ -108,7 +108,7 @@ def reciprocal_rank_fusion(
     for rank, r in enumerate(vector_results):
         cid = r["chunk_id"]
         rrf[cid] = rrf.get(cid, 0.0) + 1.0 / (k + rank + 1)
-        data[cid] = r
+        data[cid] = {**r, "vector_score": r["score"]}
 
     ranked = sorted(rrf.items(), key=lambda x: x[1], reverse=True)[:top_k]
     return [

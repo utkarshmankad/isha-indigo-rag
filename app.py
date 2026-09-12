@@ -167,7 +167,7 @@ with st.sidebar:
                 metrics = compute_tenant_metrics(tenant.airline)
                 st.metric("Total queries logged", metrics.query_count)
                 st.metric("Unanswered rate", f"{metrics.unanswered_rate:.1%}")
-                st.metric("Avg confidence", f"{metrics.avg_confidence:.2f}")
+                st.metric("Avg retrieval similarity", f"{metrics.avg_confidence:.2f}")
                 st.metric("Est. cost (flat estimate)", f"${metrics.estimated_cost_usd:.4f}")
                 st.caption(
                     "Cost is a flat per-query estimate, not measured OpenAI spend — "
@@ -215,7 +215,7 @@ with st.sidebar:
     st.metric("Queries this session", sq_count)
     if sq_confs:
         avg_conf = sum(sq_confs) / len(sq_confs)
-        st.metric("Avg confidence", f"{avg_conf:.2f}")
+        st.metric("Avg retrieval similarity", f"{avg_conf:.2f}")
     else:
         st.caption("No queries yet.")
 
