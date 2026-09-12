@@ -1,3 +1,5 @@
+from importlib.metadata import version
+
 import hashlib
 import json
 import os
@@ -8,6 +10,8 @@ import bm25s
 
 RRF_K = 60
 _BM25_CACHE_ROOT = ".bm25_cache"
+_CACHE_SCHEMA = 2
+_TOKENIZER_VERSION = 1
 
 
 def _tokenize(text: str) -> list[str]:
@@ -56,7 +60,13 @@ class BM25Index:
     @classmethod
     def build_or_load(cls, chunks: list[dict], cache_root: str = _BM25_CACHE_ROOT) -> "BM25Index":
         key = hashlib.sha256(
-            json.dumps([c["chunk_id"] for c in chunks]).encode()
+            json.dumps({
+                "schema": _CACHE_SCHEMA,
+                "tokenizer": _TOKENIZER_VERSION,
+                "bm25s": version("bm25s"),
+                "chunks": [{"chunk_id": c["chunk_id"], "text": c["text"],
+                            "metadata": c["metadata"]} for c in chunks],
+            }, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         ).hexdigest()[:16]
         cache_dir = os.path.join(cache_root, key)
         idx = cls()
