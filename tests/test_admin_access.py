@@ -58,3 +58,21 @@ def test_widget_contains_no_privileged_key():
     assert 'X-API-Key' not in widget
     assert 'REPLACE_WITH_TENANT_API_KEY' not in widget
     assert '/v1/public/query' in widget
+
+
+@pytest.mark.parametrize('next_scope',[('all',None),('indigo',None),('spicejet','spicejet')])
+def test_private_chat_is_cleared_when_view_or_auth_changes(next_scope):
+    from src.security.session_scope import reset_chat_scope
+    state={'chat_scope':('indigo','indigo'),'messages':[{'content':'private policy'}],
+           'pending_query':'private followup','session_query_count':3,'session_confidences':[0.8]}
+    reset_chat_scope(state,next_scope)
+    assert state['messages']==[]
+    assert 'pending_query' not in state
+    assert state['session_query_count']==0
+
+
+def test_same_scope_keeps_conversation():
+    from src.security.session_scope import reset_chat_scope
+    state={'chat_scope':('indigo','indigo'),'messages':[{'content':'earlier turn'}]}
+    reset_chat_scope(state,('indigo','indigo'))
+    assert state['messages']

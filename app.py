@@ -244,6 +244,10 @@ with st.sidebar:
 st.title("✈️ ISHA — Indian Airlines Smart Helpdesk Assistant")
 st.subheader("Ask me anything about IndiGo, Air India, or SpiceJet policies")
 
+from src.security.session_scope import reset_chat_scope
+
+reset_chat_scope(st.session_state, (selected_airline, tenant.tenant_id if tenant else None))
+
 if "messages" not in st.session_state:
     st.session_state["messages"] = []
 if "session_query_count" not in st.session_state:
