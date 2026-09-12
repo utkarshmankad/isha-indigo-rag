@@ -10,7 +10,7 @@ from src.tenancy.registry import TenantConfig
 @pytest.fixture(autouse=True)
 def _fixed_registry(monkeypatch):
     fake = {
-        "indigo": TenantConfig("indigo", "indigo", "IndiGo (6E)", "indigo-secret-key"),
+        "indigo": TenantConfig("indigo", "indigo", "IndiGo (6E)", "indigo-secret-key", "indigo-admin-key"),
         "spicejet": TenantConfig("spicejet", "spicejet", "SpiceJet (SG)", "sj-secret-key"),
     }
     monkeypatch.setattr("src.tenancy.registry.TENANTS", fake)
@@ -106,7 +106,7 @@ def test_admin_metrics_scoped_to_own_tenant(client):
         {"airline": "spicejet", "confidence": 0.9, "refused": False, "fallback_triggered": False},
     ]
     with patch("src.observability.admin_metrics.read_logs", return_value=fake_logs):
-        resp = client.get("/v1/admin/metrics", headers={"X-API-Key": "indigo-secret-key"})
+        resp = client.get("/v1/admin/metrics", headers={"X-Admin-Key": "indigo-admin-key"})
     assert resp.status_code == 200
     body = resp.json()
     assert body["airline"] == "indigo"
