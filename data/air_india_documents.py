@@ -669,3 +669,7 @@ DOCUMENTS = [
         ),
     },
 ]
+
+# Bundled documents are published in this repository; uploads default to private.
+for _document in DOCUMENTS:
+    _document["visibility"] = "public"
