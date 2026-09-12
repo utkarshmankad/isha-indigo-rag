@@ -72,6 +72,7 @@ def ingest_document_for_tenant(
         "airline": tenant.airline,
         "department": "Self-Serve Upload",
         "doc_type": "policy",
+        "visibility": "private",
         "last_updated": today,
         "content": content,
     }
