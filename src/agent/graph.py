@@ -315,6 +315,10 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
         airline = state.get("airline", "all")
         confidence = state["confidence"]
 
+        if state.get("stage_error") in {"embedding", "retrieval"}:
+            return {"context": "", "answer": _fallback_answer(airline),
+                    "stage_error": state["stage_error"]}
+
         if confidence < REFUSAL_FLOOR:
             logger.info(
                 "confidence below refusal floor, skipping LLM call",

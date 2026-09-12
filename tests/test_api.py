@@ -31,8 +31,9 @@ def client():
 
 def test_health_before_pipeline_ready(client):
     api_main._pipeline.clear()
-    resp = client.get("/health")
-    assert resp.status_code == 200
+    with patch("src.api.main.check_qdrant", return_value={"status": "error"}):
+        resp = client.get("/health")
+    assert resp.status_code == 503
     assert resp.json()["pipeline_ready"] is False
 
 

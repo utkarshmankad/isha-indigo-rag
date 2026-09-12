@@ -65,3 +65,8 @@ temp/
 *.bak
 *.backup
 isha-indigo-rag_api_key.txt
+
+# Private recovery artifacts
+backups/
+*.snapshot
+*.snapshot.part

@@ -23,7 +23,8 @@ _BATCH_SIZE = 100
 
 
 class QdrantVectorStore:
-    def __init__(self, collection_name: str = "airline_kb") -> None:
+    def __init__(self, collection_name: str | None = None, *, create_if_missing: bool = True) -> None:
+        collection_name = collection_name or os.environ.get("QDRANT_COLLECTION", "airline_kb")
         url = os.environ.get("QDRANT_URL")
         api_key = os.environ.get("QDRANT_API_KEY")
         if not url:
@@ -32,39 +33,47 @@ class QdrantVectorStore:
             raise EnvironmentError("QDRANT_API_KEY env var not set.")
 
         self.collection_name = collection_name
-        self.client = QdrantClient(url=url, api_key=api_key)
+        self.client = QdrantClient(url=url, api_key=api_key, timeout=10, check_compatibility=False)
 
-        existing = {c.name for c in self.client.get_collections().collections}
-        if collection_name not in existing:
-            self.client.create_collection(
-                collection_name=collection_name,
-                vectors_config=VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE),
-            )
-            logger.info("created collection", collection=collection_name, dim=EMBEDDING_DIM)
-        else:
-            info = self.client.get_collection(collection_name)
-            stored_dim = info.config.params.vectors.size
-            if stored_dim != EMBEDDING_DIM:
-                raise RuntimeError(
-                    f"Collection '{collection_name}' has dim={stored_dim}, "
-                    f"expected {EMBEDDING_DIM}. Run ingest.py --reset to rebuild."
+        try:
+            existing = {c.name for c in self.client.get_collections().collections}
+            if collection_name not in existing:
+                if not create_if_missing:
+                    raise RuntimeError("Collection unavailable; follow docs/RECOVERY.md")
+                self.client.create_collection(
+                    collection_name=collection_name,
+                    vectors_config=VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE),
                 )
-            count = info.points_count
-            logger.info("connected to collection", collection=collection_name, dim=stored_dim, points=count)
-        self.client.create_payload_index(
-            collection_name=collection_name,
-            field_name="category",
-            field_schema=PayloadSchemaType.KEYWORD,
-        )
-        self.client.create_payload_index(
-            collection_name=collection_name,
-            field_name="airline",
-            field_schema=PayloadSchemaType.KEYWORD,
-        )
-        self.client.create_payload_index(
-            collection_name=collection_name, field_name="visibility",
-            field_schema=PayloadSchemaType.KEYWORD,
-        )
+                logger.info("created collection", collection=collection_name, dim=EMBEDDING_DIM)
+            else:
+                info = self.client.get_collection(collection_name)
+                stored_dim = info.config.params.vectors.size
+                if stored_dim != EMBEDDING_DIM:
+                    raise RuntimeError(
+                        f"Collection '{collection_name}' has dim={stored_dim}, "
+                        f"expected {EMBEDDING_DIM}. Check collection configuration before recovery."
+                    )
+                count = info.points_count
+                logger.info("connected to collection", collection=collection_name, dim=stored_dim, points=count)
+            if create_if_missing:
+                self.client.create_payload_index(
+                    collection_name=collection_name,
+                    field_name="category",
+                    field_schema=PayloadSchemaType.KEYWORD,
+                )
+                self.client.create_payload_index(
+                    collection_name=collection_name,
+                    field_name="airline",
+                    field_schema=PayloadSchemaType.KEYWORD,
+                )
+                self.client.create_payload_index(
+                    collection_name=collection_name, field_name="visibility",
+                    field_schema=PayloadSchemaType.KEYWORD,
+                )
+        except Exception:
+            self.client.close()
+            raise
+
 
     def upsert(self, chunks: list[dict]) -> None:
         total = len(chunks)
