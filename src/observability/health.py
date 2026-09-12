@@ -20,22 +20,8 @@ def check_openai_key() -> dict:
 
 
 def check_qdrant() -> dict:
-    url = os.environ.get("QDRANT_URL")
-    api_key = os.environ.get("QDRANT_API_KEY")
-    if not url or not api_key:
-        return {"status": "error", "detail": "QDRANT_URL/QDRANT_API_KEY not set"}
-
-    t0 = time.time()
-    try:
-        from qdrant_client import QdrantClient
-
-        client = QdrantClient(url=url, api_key=api_key)
-        client.get_collections()
-        latency_ms = int((time.time() - t0) * 1000)
-        return {"status": "ok", "latency_ms": latency_ms}
-    except Exception as e:
-        logger.warning("qdrant health check failed", error=str(e))
-        return {"status": "error", "detail": "could not reach Qdrant"}
+    from src.reliability.qdrant_probe import probe_qdrant
+    return probe_qdrant()
 
 
 def check_log_dir_writable() -> dict:

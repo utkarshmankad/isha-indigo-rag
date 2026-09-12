@@ -109,11 +109,11 @@ def init_pipeline() -> dict:
     from src.embedding.vector_store import QdrantVectorStore
     from src.ingestion.chunker import ingest_all
 
-    store = QdrantVectorStore()
+    store = QdrantVectorStore(create_if_missing=False)
     n = store.stats()["total_vectors"]
     if n == 0:
         raise RuntimeError(
-            "Qdrant collection is empty. Run: uv run python scripts/ingest.py --reset"
+            "Qdrant collection is empty. Follow docs/RECOVERY.md before re-ingesting."
         )
 
     all_docs = INDIGO_DOCS + AI_DOCS + SJ_DOCS + DGCA_DOCS
@@ -124,14 +124,10 @@ def init_pipeline() -> dict:
 
 try:
     pipeline = init_pipeline()
-except RuntimeError as e:
-    st.error(f"❌ {e}")
-    st.stop()
-except Exception as e:
-    st.error(
-        "❌ Failed to initialise ISHA. Check credentials and Qdrant connection.\n\n"
-        f"`{e}`"
-    )
+except Exception:
+    st.error("ISHA is temporarily unavailable. Check Qdrant connectivity and collection configuration.")
+    if st.button("Retry connection"):
+        st.rerun()
     st.stop()
 
 

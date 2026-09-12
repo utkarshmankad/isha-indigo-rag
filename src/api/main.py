@@ -17,6 +17,9 @@ from threading import Lock
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
+from src.observability.health import check_openai_key, check_qdrant
 from pydantic import BaseModel, Field
 
 from src.agent.graph import run_agent, run_agent_for_tenant
@@ -31,7 +34,7 @@ logger = get_logger("api.main")
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    init_app_state()
+    await run_in_threadpool(ensure_pipeline)
     yield
 
 
@@ -47,6 +50,33 @@ _rate_lock = Lock()
 _query_times: dict[str, list[float]] = defaultdict(list)
 
 _pipeline: dict = {}
+_init_lock = Lock()
+_last_init_attempt = float('-inf')
+
+
+def ensure_pipeline() -> bool:
+    """Retry failed startup on later requests, with a cooldown and one builder."""
+    global _last_init_attempt
+    if 'graph' in _pipeline:
+        return True
+    if not _init_lock.acquire(blocking=False):
+        return False
+    try:
+        if 'graph' in _pipeline:
+            return True
+        now = time.monotonic()
+        if now - _last_init_attempt < 5:
+            return False
+        _last_init_attempt = now
+        try:
+            init_app_state()
+        except Exception:
+            logger.warning('pipeline unavailable; will retry initialization')
+            return False
+        return 'graph' in _pipeline
+    finally:
+        _init_lock.release()
+
 
 
 def init_app_state() -> None:
@@ -61,12 +91,14 @@ def init_app_state() -> None:
 
     all_docs = INDIGO_DOCS + AI_DOCS + SJ_DOCS + DGCA_DOCS
     chunks = ingest_all(all_docs)
-    store = QdrantVectorStore()
-    if store.stats()["total_vectors"] == 0:
-        raise RuntimeError(
-            "Qdrant collection is empty. Run: uv run python scripts/ingest.py --reset"
-        )
-    _pipeline["graph"] = build_graph(chunks, store)
+    store = QdrantVectorStore(create_if_missing=False)
+    try:
+        if store.stats()["total_vectors"] == 0:
+            raise RuntimeError("Qdrant collection is empty. Follow docs/RECOVERY.md; do not reset during an outage.")
+        _pipeline["graph"] = build_graph(chunks, store)
+    except Exception:
+        store.client.close()
+        raise
 
 
 class HistoryTurn(BaseModel):
@@ -109,9 +141,21 @@ def get_tenant(x_api_key: str = Header(..., alias="X-API-Key")) -> TenantConfig:
     return tenant
 
 
+@app.get("/live")
+def live() -> dict:
+    return {"status": "ok"}
+
+
 @app.get("/health")
-def health() -> dict:
-    return {"status": "ok", "pipeline_ready": "graph" in _pipeline}
+def health() -> JSONResponse:
+    checks = {"qdrant": check_qdrant(), "openai": check_openai_key()}
+    dependencies_ok = all(c["status"] == "ok" for c in checks.values())
+    ready = ensure_pipeline() if dependencies_ok else False
+    healthy = dependencies_ok and ready
+    return JSONResponse(
+        {"status": "ok" if healthy else "degraded", "pipeline_ready": ready, "checks": checks},
+        status_code=200 if healthy else 503,
+    )
 
 
 class AdminMetricsResponse(BaseModel):
@@ -166,8 +210,10 @@ def public_query(req: QueryRequest, request: Request) -> QueryResponse:
 
 
 def answer_query(req: QueryRequest, tenant: TenantConfig | None = None) -> QueryResponse:
-    if "graph" not in _pipeline:
-        raise HTTPException(status_code=503, detail="Pipeline not ready.")
+    if not ensure_pipeline():
+        raise HTTPException(status_code=503, detail="Service temporarily unavailable. Try again shortly.",
+                            headers={"Retry-After": "5"})
+
 
     airline = tenant.airline if tenant else "all"
     is_valid, reason, _issues = QueryValidator.validate_input(req.query, airline)
@@ -185,6 +231,10 @@ def answer_query(req: QueryRequest, tenant: TenantConfig | None = None) -> Query
     else:
         state = run_agent(req.query, _pipeline["graph"], airline="all",
                           correlation_id=correlation_id, history=history)
+
+    if state.get("stage_error") in {"embedding", "retrieval", "generation"}:
+        raise HTTPException(status_code=503, detail="Service temporarily unavailable. Try again shortly.",
+                            headers={"Retry-After": "5"})
 
     return QueryResponse(
         answer=state["answer"],
