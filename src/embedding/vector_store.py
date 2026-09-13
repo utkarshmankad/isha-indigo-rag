@@ -66,9 +66,14 @@ class QdrantVectorStore:
                     field_name="airline",
                     field_schema=PayloadSchemaType.KEYWORD,
                 )
+                self.client.create_payload_index(
+                    collection_name=collection_name, field_name="visibility",
+                    field_schema=PayloadSchemaType.KEYWORD,
+                )
         except Exception:
             self.client.close()
             raise
+
 
     def upsert(self, chunks: list[dict]) -> None:
         total = len(chunks)
@@ -105,7 +110,19 @@ class QdrantVectorStore:
             )
         if airline_filter:
             must.append(FieldCondition(key="airline", match=MatchAny(any=airline_filter)))
-        qdrant_filter = Filter(must=must) if must else None
+        if not airline_filter:
+            # Every unscoped path, including public All Airlines and confidence
+            # searches, must fail closed for legacy/unknown/private payloads.
+            must.append(FieldCondition(key="visibility", match=MatchValue(value="public")))
+        else:
+            # DGCA is shared only when published. Private airline documents are
+            # available only through an explicitly scoped trusted tenant path.
+            owned = [airline for airline in airline_filter if airline != "dgca"]
+            allowed = [FieldCondition(key="visibility", match=MatchValue(value="public"))]
+            if owned:
+                allowed.append(FieldCondition(key="airline", match=MatchAny(any=owned)))
+            must.append(Filter(should=allowed))
+        qdrant_filter = Filter(must=must)
 
         response = self.client.query_points(
             collection_name=self.collection_name,
@@ -163,6 +180,10 @@ class QdrantVectorStore:
         self.client.create_payload_index(
             collection_name=self.collection_name,
             field_name="airline",
+            field_schema=PayloadSchemaType.KEYWORD,
+        )
+        self.client.create_payload_index(
+            collection_name=self.collection_name, field_name="visibility",
             field_schema=PayloadSchemaType.KEYWORD,
         )
         print(
