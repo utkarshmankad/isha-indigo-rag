@@ -1,0 +1,43 @@
+name: Unit and reliability tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unit-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Python ${{ matrix.python }} tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.12', '3.13']
+    env:
+      DOTENV_DISABLED: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+      RAGAS_DO_NOT_TRACK: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          python-version: ${{ matrix.python }}
+      - run: uv sync --locked
+      - name: Run all unit and reliability regressions without service credentials
+        run: uv run --locked python -m pytest tests -q --junitxml=test-results.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-tests-python-${{ matrix.python }}
+          path: test-results.xml
+          retention-days: 14

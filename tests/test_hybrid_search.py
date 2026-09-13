@@ -107,3 +107,38 @@ def test_rrf_shared_chunk_ranks_higher():
     ]
     fused = reciprocal_rank_fusion(bm25, vec, top_k=3)
     assert fused[0]["chunk_id"] == "shared"
+
+
+def test_same_id_policy_edit_rebuilds_cached_text(tmp_path):
+    from copy import deepcopy
+    original = deepcopy(SAMPLE_CHUNKS)
+    BM25Index.build_or_load(original, cache_root=str(tmp_path))
+    revised = deepcopy(original)
+    revised[0]['text'] = 'IndiGo revised checked baggage allowance is twenty kilograms.'
+    updated = BM25Index.build_or_load(revised, cache_root=str(tmp_path))
+    assert updated.search('revised twenty kilograms', top_k=1)[0]['text'] == revised[0]['text']
+    assert len(list(tmp_path.iterdir())) == 2
+
+
+def test_visibility_and_airline_edits_invalidate_metadata(tmp_path):
+    from copy import deepcopy
+    original = deepcopy(SAMPLE_CHUNKS)
+    original[0]['metadata']['visibility'] = 'public'
+    BM25Index.build_or_load(original, cache_root=str(tmp_path))
+    revised = deepcopy(original)
+    revised[0]['metadata'].update(visibility='private', airline='spicejet')
+    updated = BM25Index.build_or_load(revised, cache_root=str(tmp_path))
+    hit = next(r for r in updated.search('baggage', top_k=5) if r['chunk_id'] == revised[0]['chunk_id'])
+    assert hit['metadata']['visibility'] == 'private'
+    assert hit['metadata']['airline'] == 'spicejet'
+
+
+def test_metadata_dict_order_does_not_create_duplicate_cache(tmp_path):
+    from copy import deepcopy
+    original = deepcopy(SAMPLE_CHUNKS)
+    BM25Index.build_or_load(original, cache_root=str(tmp_path))
+    revised = deepcopy(original)
+    for c in revised:
+        c['metadata'] = dict(reversed(list(c['metadata'].items())))
+    BM25Index.build_or_load(revised, cache_root=str(tmp_path))
+    assert len(list(tmp_path.iterdir())) == 1

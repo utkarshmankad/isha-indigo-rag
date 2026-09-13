@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from threading import Lock
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
@@ -23,6 +23,8 @@ from src.observability.health import check_openai_key, check_qdrant
 from pydantic import BaseModel, Field
 
 from src.agent.graph import run_agent, run_agent_for_tenant
+from src.billing.stripe_usage import record_query_usage
+from src.escalation.queue import list_pending_escalations, resolve_escalation
 from src.observability.logging_config import get_logger
 from src.security.validator import QueryValidator
 from src.tenancy.registry import TenantConfig, authenticate_by_key, authenticate_admin_by_key
@@ -115,9 +117,12 @@ class SourceOut(BaseModel):
     title: str
     category: str
     score: float
+    source_doc_id: str
+    section: int | None = Field(default=None, description="1-based chunk position, not an official policy section")
 
 
 class QueryResponse(BaseModel):
+    refused: bool = False
     answer: str
     confidence: float = Field(description="Retrieval similarity of selected evidence; not answer accuracy probability")
     sources: list[SourceOut]
@@ -194,10 +199,52 @@ def admin_metrics(tenant: TenantConfig = Depends(get_admin_tenant)) -> AdminMetr
     )
 
 
+class EscalationOut(BaseModel):
+    escalation_id: str
+    correlation_id: str
+    timestamp: str
+    query: str
+    confidence: float
+    status: str
+
+
+@app.get("/v1/admin/escalations", response_model=list[EscalationOut])
+def admin_escalations(tenant: TenantConfig = Depends(get_admin_tenant)) -> list[EscalationOut]:
+    """Pending human-review queue for the calling tenant only — a low-
+    confidence/refused query never surfaces here for another airline."""
+    entries = list_pending_escalations(tenant.airline)
+    return [
+        EscalationOut(
+            escalation_id=e["escalation_id"],
+            correlation_id=e["correlation_id"],
+            timestamp=e["timestamp"],
+            query=e["query"],
+            confidence=e["confidence"],
+            status=e["status"],
+        )
+        for e in entries
+    ]
+
+
+@app.post("/v1/admin/escalations/{escalation_id}/resolve")
+def admin_resolve_escalation(
+    escalation_id: str, tenant: TenantConfig = Depends(get_admin_tenant),
+) -> dict:
+    resolved = resolve_escalation(escalation_id, tenant.airline)
+    if not resolved:
+        raise HTTPException(status_code=404, detail="Escalation not found for this tenant.")
+    return {"escalation_id": escalation_id, "status": "resolved"}
+
+
 @app.post("/v1/query", response_model=QueryResponse)
-def query(req: QueryRequest, tenant: TenantConfig = Depends(get_tenant)) -> QueryResponse:
+def query(
+    req: QueryRequest, background_tasks: BackgroundTasks, tenant: TenantConfig = Depends(get_tenant),
+) -> QueryResponse:
     _check_rate_limit(tenant.tenant_id)
-    return answer_query(req, tenant)
+    response = answer_query(req, tenant)
+    if not response.refused:
+        background_tasks.add_task(record_query_usage, tenant.tenant_id, response.correlation_id)
+    return response
 
 
 @app.post("/v1/public/query", response_model=QueryResponse)
@@ -238,12 +285,17 @@ def answer_query(req: QueryRequest, tenant: TenantConfig | None = None) -> Query
 
     return QueryResponse(
         answer=state["answer"],
+        refused=state.get("refused", False),
         confidence=state["confidence"],
         sources=[
             SourceOut(
                 title=c["metadata"].get("title", ""),
                 category=c["metadata"].get("category", ""),
                 score=round(c.get("score", 0.0), 3),
+                source_doc_id=c["metadata"].get("source_doc_id", ""),
+                section=c["metadata"]["chunk_index"] + 1
+                if isinstance(c["metadata"].get("chunk_index"), int)
+                else None,
             )
             for c in state["retrieved_chunks"]
         ],
