@@ -55,7 +55,7 @@ class BM25Index:
 
     @classmethod
     def build_or_load(cls, chunks: list[dict], cache_root: str = _BM25_CACHE_ROOT) -> "BM25Index":
-        key = hashlib.sha256(
+        key = "visibility-v1-" + hashlib.sha256(
             json.dumps([c["chunk_id"] for c in chunks]).encode()
         ).hexdigest()[:16]
         cache_dir = os.path.join(cache_root, key)
@@ -142,6 +142,12 @@ def hybrid_search(
             r for r in bm25_results
             if r["metadata"].get("airline") in airline_filter
         ]
+
+    if not airline_filter:
+        bm25_results = [r for r in bm25_results if r["metadata"].get("visibility") == "public"]
+    else:
+        bm25_results = [r for r in bm25_results if r["metadata"].get("airline") != "dgca"
+                        or r["metadata"].get("visibility") == "public"]
 
     vector_results = vector_store.query(
         query_vector, top_k=fetch_k, filters=filters, airline_filter=airline_filter

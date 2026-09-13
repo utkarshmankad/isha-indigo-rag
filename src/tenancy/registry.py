@@ -31,6 +31,7 @@ class TenantConfig:
     airline: str
     display_name: str
     api_key: str
+    admin_api_key: str = ""
 
 
 def _load_registry() -> dict[str, TenantConfig]:
@@ -46,7 +47,11 @@ def _load_registry() -> dict[str, TenantConfig]:
             )
         registry[airline] = TenantConfig(
             tenant_id=airline, airline=airline, display_name=display_name, api_key=api_key,
+            admin_api_key=os.environ.get(f"TENANT_ADMIN_APIKEY_{airline.upper()}", ""),
         )
+    keys = [t.api_key for t in registry.values()] + [t.admin_api_key for t in registry.values() if t.admin_api_key]
+    if len(keys) != len(set(keys)):
+        raise ValueError("Tenant chat/admin keys must be distinct across roles and airlines")
     return registry
 
 
@@ -75,3 +80,17 @@ def authenticate_by_key(api_key: str) -> TenantConfig | None:
         if secrets.compare_digest(tenant.api_key, api_key):
             return tenant
     return None
+
+
+def authenticate_admin_by_key(api_key: str) -> TenantConfig | None:
+    if not api_key:
+        return None
+    for tenant in TENANTS.values():
+        if tenant.admin_api_key and secrets.compare_digest(tenant.admin_api_key, api_key):
+            return tenant
+    return None
+
+
+def authenticate_admin(airline: str, api_key: str) -> TenantConfig | None:
+    tenant = authenticate_admin_by_key(api_key)
+    return tenant if tenant and tenant.airline == airline else None

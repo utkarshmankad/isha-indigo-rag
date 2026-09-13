@@ -89,7 +89,10 @@ SAMPLE_QUESTIONS: dict[str, list[str]] = {
 
 @st.cache_resource(show_spinner="Connecting to Qdrant and building search index…")
 def init_pipeline() -> dict:
-    for key in ["OPENAI_API_KEY", "QDRANT_URL", "QDRANT_API_KEY"]:
+    secret_keys = ["OPENAI_API_KEY", "QDRANT_URL", "QDRANT_API_KEY", "QDRANT_COLLECTION"]
+    secret_keys += [f"{prefix}_{airline}" for prefix in ("TENANT_APIKEY", "TENANT_ADMIN_APIKEY")
+                    for airline in ("INDIGO", "AIR_INDIA", "SPICEJET")]
+    for key in secret_keys:
         if not os.getenv(key):
             try:
                 val = st.secrets.get(key)
@@ -147,7 +150,7 @@ with st.sidebar:
 
     tenant = None
     if selected_airline != "all":
-        from src.tenancy.registry import authenticate
+        from src.tenancy.registry import authenticate, authenticate_admin
 
         st.markdown("**Tenant API key** (required for a single-airline view):")
         api_key_input = st.text_input(
@@ -160,11 +163,16 @@ with st.sidebar:
         elif tenant is not None:
             st.success(f"🔓 Authenticated as {tenant.display_name}")
 
-        if tenant is not None:
+        admin_key_input = st.text_input("Administrator key", type="password",
+                                       key=f"admin_key_{selected_airline}")
+        admin_tenant = authenticate_admin(selected_airline, admin_key_input)
+        if admin_key_input and admin_tenant is None:
+            st.error("Invalid administrator key for this airline.")
+        if admin_tenant is not None:
             with st.expander("📈 Admin dashboard"):
                 from src.observability.admin_metrics import compute_tenant_metrics
 
-                metrics = compute_tenant_metrics(tenant.airline)
+                metrics = compute_tenant_metrics(admin_tenant.airline)
                 st.metric("Total queries logged", metrics.query_count)
                 st.metric("Unanswered rate", f"{metrics.unanswered_rate:.1%}")
                 st.metric("Avg retrieval similarity", f"{metrics.avg_confidence:.2f}")
@@ -185,18 +193,18 @@ with st.sidebar:
                 if st.button("Ingest document", key="upload_submit"):
                     try:
                         result = ingest_document_for_tenant(
-                            tenant, up_title, up_content, up_category, pipeline["store"],
+                            admin_tenant, up_title, up_content, up_category, pipeline["store"],
                         )
                         st.success(
                             f"Ingested `{result['doc_id']}` — {result['chunk_count']} chunks. "
                             "Available immediately for semantic search. Note: exact-keyword "
-                            "(BM25) matching won't include it until the app is restarted, since "
-                            "that index is built from the static document set, not Qdrant."
+                            "(BM25) matching requires updating the canonical corpus; restarting "
+                            "alone does not add uploads to the static document set."
                         )
                     except UploadValidationError as e:
                         st.error(f"❌ {e}")
                     except Exception:
-                        logger.error("self-serve ingestion failed", tenant=tenant.tenant_id, exc_info=True)
+                        logger.error("self-serve ingestion failed", tenant=admin_tenant.tenant_id, exc_info=True)
                         st.error("❌ Ingestion failed. Check logs for details.")
 
     st.divider()
@@ -235,6 +243,10 @@ with st.sidebar:
 # ── Main area ─────────────────────────────────────────────────────────────────
 st.title("✈️ ISHA — Indian Airlines Smart Helpdesk Assistant")
 st.subheader("Ask me anything about IndiGo, Air India, or SpiceJet policies")
+
+from src.security.session_scope import reset_chat_scope
+
+reset_chat_scope(st.session_state, (selected_airline, tenant.tenant_id if tenant else None))
 
 if "messages" not in st.session_state:
     st.session_state["messages"] = []

@@ -15,17 +15,17 @@ from contextlib import asynccontextmanager
 from threading import Lock
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 from src.observability.health import check_openai_key, check_qdrant
 from pydantic import BaseModel, Field
 
-from src.agent.graph import run_agent_for_tenant
+from src.agent.graph import run_agent, run_agent_for_tenant
 from src.observability.logging_config import get_logger
 from src.security.validator import QueryValidator
-from src.tenancy.registry import TenantConfig, authenticate_by_key
+from src.tenancy.registry import TenantConfig, authenticate_by_key, authenticate_admin_by_key
 
 load_dotenv()
 
@@ -40,8 +40,7 @@ async def _lifespan(app: FastAPI):
 
 app = FastAPI(title="ISHA API", version="0.1.0", lifespan=_lifespan)
 
-# CORS wide open by default so a website widget on any origin can call this
-# endpoint — the API key is the actual access control, not same-origin.
+# Public chat is browser-accessible; administrator authorization is separate.
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["POST", "GET"], allow_headers=["*"],
 )
@@ -168,8 +167,15 @@ class AdminMetricsResponse(BaseModel):
     estimated_cost_usd: float
 
 
+def get_admin_tenant(x_admin_key: str | None = Header(None, alias="X-Admin-Key")) -> TenantConfig:
+    tenant = authenticate_admin_by_key(x_admin_key or "")
+    if tenant is None:
+        raise HTTPException(status_code=401, detail="Administrator credentials required.")
+    return tenant
+
+
 @app.get("/v1/admin/metrics", response_model=AdminMetricsResponse)
-def admin_metrics(tenant: TenantConfig = Depends(get_tenant)) -> AdminMetricsResponse:
+def admin_metrics(tenant: TenantConfig = Depends(get_admin_tenant)) -> AdminMetricsResponse:
     """API-side counterpart to the Streamlit sidebar's admin dashboard
     (Sprint 5) — an API-only tenant (website widget, Slack app, anything
     that only ever talks to this service, never opens the Streamlit app)
@@ -190,23 +196,41 @@ def admin_metrics(tenant: TenantConfig = Depends(get_tenant)) -> AdminMetricsRes
 
 @app.post("/v1/query", response_model=QueryResponse)
 def query(req: QueryRequest, tenant: TenantConfig = Depends(get_tenant)) -> QueryResponse:
+    _check_rate_limit(tenant.tenant_id)
+    return answer_query(req, tenant)
+
+
+@app.post("/v1/public/query", response_model=QueryResponse)
+def public_query(req: QueryRequest, request: Request) -> QueryResponse:
+    # Limit aggregate spend as well as per-client use. Never trust a client-
+    # supplied forwarding header to select a rate-limit identity.
+    _check_rate_limit("public:global")
+    _check_rate_limit("public:" + (request.client.host if request.client else "unknown"))
+    return answer_query(req)
+
+
+def answer_query(req: QueryRequest, tenant: TenantConfig | None = None) -> QueryResponse:
     if not ensure_pipeline():
         raise HTTPException(status_code=503, detail="Service temporarily unavailable. Try again shortly.",
                             headers={"Retry-After": "5"})
 
-    _check_rate_limit(tenant.tenant_id)
 
-    is_valid, reason, _issues = QueryValidator.validate_input(req.query, tenant.airline)
+    airline = tenant.airline if tenant else "all"
+    is_valid, reason, _issues = QueryValidator.validate_input(req.query, airline)
     if not is_valid:
         raise HTTPException(status_code=400, detail=f"Query rejected: {reason}")
 
     correlation_id = str(uuid.uuid4())
-    logger.info("api query received", tenant=tenant.tenant_id, correlation_id=correlation_id)
+    logger.info("api query received", tenant=tenant.tenant_id if tenant else "public", correlation_id=correlation_id)
 
     history = [h.model_dump() for h in req.history]
-    state = run_agent_for_tenant(
-        req.query, _pipeline["graph"], tenant, correlation_id=correlation_id, history=history,
-    )
+    if tenant:
+        state = run_agent_for_tenant(
+            req.query, _pipeline["graph"], tenant, correlation_id=correlation_id, history=history,
+        )
+    else:
+        state = run_agent(req.query, _pipeline["graph"], airline="all",
+                          correlation_id=correlation_id, history=history)
 
     if state.get("stage_error") in {"embedding", "retrieval", "generation"}:
         raise HTTPException(status_code=503, detail="Service temporarily unavailable. Try again shortly.",
