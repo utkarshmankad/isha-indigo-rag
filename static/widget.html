@@ -2,7 +2,7 @@
   ISHA embeddable chat widget (S6-T2).
 
   Drop this file's <script> block onto any airline's website (adjusting
-  API_BASE and API_KEY below) to get a floating chat bubble that talks to
+  API_BASE below) to get a floating chat bubble that talks to
   the FastAPI wrapper (src/api/main.py). Self-contained, no build step,
   no external dependencies — deliberately simple since it's a reference
   implementation for airlines to adapt, not a shipped product widget.
@@ -48,9 +48,8 @@
 
 <script>
 (function () {
-  // Adjust these two for the embedding airline's own deployment.
+  // Public endpoint uses only published policies. Never embed staff/admin keys.
   const API_BASE = "http://localhost:8080";
-  const API_KEY = "REPLACE_WITH_TENANT_API_KEY";
 
   const bubble = document.getElementById("isha-bubble");
   const panel = document.getElementById("isha-panel");
@@ -77,9 +76,9 @@
     const placeholder = messages.lastChild;
 
     try {
-      const res = await fetch(API_BASE + "/v1/query", {
+      const res = await fetch(API_BASE + "/v1/public/query", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-API-Key": API_KEY },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query: text }),
       });
       const data = await res.json();
