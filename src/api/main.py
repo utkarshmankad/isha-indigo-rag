@@ -119,7 +119,7 @@ class SourceOut(BaseModel):
 
 class QueryResponse(BaseModel):
     answer: str
-    confidence: float
+    confidence: float = Field(description="Retrieval similarity of selected evidence; not answer accuracy probability")
     sources: list[SourceOut]
     correlation_id: str
 
