@@ -118,7 +118,7 @@ def reciprocal_rank_fusion(
     for rank, r in enumerate(vector_results):
         cid = r["chunk_id"]
         rrf[cid] = rrf.get(cid, 0.0) + 1.0 / (k + rank + 1)
-        data[cid] = r
+        data[cid] = {**r, "vector_score": r["score"]}
 
     ranked = sorted(rrf.items(), key=lambda x: x[1], reverse=True)[:top_k]
     return [
@@ -152,6 +152,12 @@ def hybrid_search(
             r for r in bm25_results
             if r["metadata"].get("airline") in airline_filter
         ]
+
+    if not airline_filter:
+        bm25_results = [r for r in bm25_results if r["metadata"].get("visibility") == "public"]
+    else:
+        bm25_results = [r for r in bm25_results if r["metadata"].get("airline") != "dgca"
+                        or r["metadata"].get("visibility") == "public"]
 
     vector_results = vector_store.query(
         query_vector, top_k=fetch_k, filters=filters, airline_filter=airline_filter

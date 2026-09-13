@@ -1,3 +1,4 @@
+import math
 import os
 import time
 import uuid
@@ -11,7 +12,7 @@ from src.embedding.vector_store import QdrantVectorStore
 from src.observability.logging_config import get_logger
 from src.reliability.circuit_breaker import CircuitBreaker
 from src.retrieval.hybrid_search import BM25Index, hybrid_search
-from src.retrieval.retriever import RetrievalEngine
+from src.retrieval.retriever import MAX_CONTEXT_CHARS, RetrievalEngine
 from src.retrieval.tool_selector import route_query
 from src.security.prompt_protection import PromptGuard
 
@@ -246,11 +247,6 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
             }
 
         try:
-            # Confidence from cosine similarity, scoped to airline if selected
-            conf_results = vector_store.query(qvec, top_k=3, airline_filter=airline_filter)
-            confidence = max((r["score"] for r in conf_results), default=0.0)
-            logger.info("confidence computed", correlation_id=cid, confidence=round(confidence, 4))
-
             # Hybrid search: per-tool filtered or global
             all_chunks: dict[str, dict] = {}
             if search_all:
@@ -272,8 +268,19 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
 
             # Dedupe, keep top 5 by fusion_score
             deduped = sorted(
-                all_chunks.values(), key=lambda r: r["fusion_score"], reverse=True
+                (r for r in all_chunks.values() if r.get("text", "").strip()),
+                key=lambda r: r["fusion_score"], reverse=True
             )[:5]
+            # Keep complete passages that actually fit the generation context.
+            selected = []
+            for chunk in deduped:
+                if len(engine.build_context(selected + [chunk])) <= MAX_CONTEXT_CHARS:
+                    selected.append(chunk)
+            deduped = selected
+            scores = [r.get("vector_score", 0.0) for r in deduped]
+            confidence = max((min(1.0, max(0.0, score)) for score in scores
+                              if isinstance(score, (int, float)) and math.isfinite(score)), default=0.0)
+            logger.info("evidence similarity computed", correlation_id=cid, confidence=confidence)
 
             logger.info(
                 "retrieval deduped",
@@ -319,7 +326,7 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
             return {"context": "", "answer": _fallback_answer(airline),
                     "stage_error": state["stage_error"]}
 
-        if confidence < REFUSAL_FLOOR:
+        if not chunks or confidence < REFUSAL_FLOOR:
             logger.info(
                 "confidence below refusal floor, skipping LLM call",
                 correlation_id=cid, confidence=round(confidence, 4), floor=REFUSAL_FLOOR,
