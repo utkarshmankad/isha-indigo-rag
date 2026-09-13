@@ -54,6 +54,7 @@ class AgentState(TypedDict):
     search_all: bool
     dgca_query: bool
     stage_error: str
+    refused: bool
     correlation_id: str
     history: list[dict[str, str]]
 
@@ -342,7 +343,14 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
                 )
             except Exception:
                 logger.warning("query log write failed", correlation_id=cid, exc_info=True)
-            return {"context": "", "answer": answer, "stage_error": ""}
+
+            try:
+                from src.escalation.queue import enqueue_escalation
+                enqueue_escalation(query=query, airline=airline, confidence=confidence, correlation_id=cid)
+            except Exception:
+                logger.warning("escalation enqueue failed", correlation_id=cid, exc_info=True)
+
+            return {"context": "", "answer": answer, "stage_error": "", "refused": True}
 
         try:
             context = engine.build_context(chunks)
@@ -429,6 +437,7 @@ def run_agent(
         "search_all": False,
         "dgca_query": False,
         "stage_error": "",
+        "refused": False,
         "correlation_id": cid,
         "history": history or [],
     }
