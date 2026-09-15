@@ -9,6 +9,7 @@ from langgraph.graph import END, StateGraph
 
 from src.embedding.embedder import embed_batch
 from src.embedding.vector_store import QdrantVectorStore
+from src.ingestion.index_manager import IndexManager
 from src.observability.logging_config import get_logger
 from src.reliability.circuit_breaker import CircuitBreaker
 from src.retrieval.hybrid_search import BM25Index, hybrid_search
@@ -134,6 +135,7 @@ def generate_answer(prompt: str) -> str:
 
 def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
     bm25_index = BM25Index.build_or_load(chunks)
+    index_manager = IndexManager(bm25_index, vector_store)
     engine = RetrievalEngine(vector_store)
 
     def select_tools_node(state: AgentState) -> dict:
@@ -415,7 +417,9 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
     )
     workflow.add_edge("generate", END)
 
-    return workflow.compile()
+    compiled = workflow.compile()
+    compiled.index_manager = index_manager
+    return compiled
 
 
 def run_agent(

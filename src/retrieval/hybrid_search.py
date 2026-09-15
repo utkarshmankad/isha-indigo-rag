@@ -76,6 +76,46 @@ class BM25Index:
         idx.save(cache_dir)
         return idx
 
+    def chunks_for_document(self, doc_id: str) -> list[dict]:
+        return [
+            c for c in self._chunks
+            if c.get("doc_id") == doc_id or c["metadata"].get("source_doc_id") == doc_id
+        ]
+
+    def add_chunks(self, chunks: list[dict]) -> None:
+        """Append chunks and reindex. Full rebuild — the bundled+uploaded
+        corpus is small enough (hundreds of chunks) that bm25s's own index
+        build is cheap; there is no incremental-add API to reuse instead."""
+        if not chunks:
+            return
+        self.build(self._chunks + list(chunks))
+
+    def remove_document(self, doc_id: str) -> list[dict]:
+        """Remove all chunks for `doc_id` and reindex. Returns the removed
+        chunks so a caller can restore them if a paired operation (e.g. a
+        dense-store write) fails afterwards."""
+        removed = self.chunks_for_document(doc_id)
+        if not removed:
+            return []
+        removed_ids = {c["chunk_id"] for c in removed}
+        remaining = [c for c in self._chunks if c["chunk_id"] not in removed_ids]
+        if remaining:
+            self.build(remaining)
+        else:
+            self._chunks = []
+            self._index = None
+        return removed
+
+    def replace_document(self, doc_id: str, chunks: list[dict]) -> None:
+        """Atomically swap all chunks for `doc_id` for a new set, in one
+        rebuild — used for updates so there is never a rebuild in between
+        where the document exists twice or not at all."""
+        remaining = [
+            c for c in self._chunks
+            if c.get("doc_id") != doc_id and c["metadata"].get("source_doc_id") != doc_id
+        ]
+        self.build(remaining + list(chunks))
+
     def search(self, query: str, top_k: int = 10) -> list[dict]:
         if self._index is None:
             raise RuntimeError("BM25Index not built — call build() first.")

@@ -70,6 +70,10 @@ class QdrantVectorStore:
                     collection_name=collection_name, field_name="visibility",
                     field_schema=PayloadSchemaType.KEYWORD,
                 )
+                self.client.create_payload_index(
+                    collection_name=collection_name, field_name="source_doc_id",
+                    field_schema=PayloadSchemaType.KEYWORD,
+                )
         except Exception:
             self.client.close()
             raise
@@ -187,10 +191,34 @@ class QdrantVectorStore:
             collection_name=self.collection_name, field_name="visibility",
             field_schema=PayloadSchemaType.KEYWORD,
         )
+        self.client.create_payload_index(
+            collection_name=self.collection_name, field_name="source_doc_id",
+            field_schema=PayloadSchemaType.KEYWORD,
+        )
         print(
             f"[vector_store] Recreated collection '{self.collection_name}' "
             f"(dim={EMBEDDING_DIM})."
         )
+
+    def delete_by_doc_id(self, doc_id: str) -> None:
+        self.client.delete(
+            collection_name=self.collection_name,
+            points_selector=FilterSelector(
+                filter=Filter(must=[FieldCondition(key="source_doc_id", match=MatchValue(value=doc_id))])
+            ),
+        )
+        print(f"[vector_store] Deleted all points for source_doc_id='{doc_id}'.")
+
+    def delete_by_chunk_ids(self, chunk_ids: list[str]) -> None:
+        if not chunk_ids:
+            return
+        self.client.delete(
+            collection_name=self.collection_name,
+            points_selector=FilterSelector(
+                filter=Filter(must=[FieldCondition(key="chunk_id", match=MatchAny(any=chunk_ids))])
+            ),
+        )
+        print(f"[vector_store] Deleted {len(chunk_ids)} point(s) by chunk_id.")
 
     def delete_by_airline(self, airline: str) -> None:
         self.client.delete(
