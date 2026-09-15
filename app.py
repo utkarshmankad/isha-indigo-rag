@@ -119,7 +119,10 @@ def init_pipeline() -> dict:
     all_docs = INDIGO_DOCS + AI_DOCS + SJ_DOCS + DGCA_DOCS
     chunks = ingest_all(all_docs)
     graph = build_graph(chunks, store)
-    return {"graph": graph, "run_agent": run_agent, "n_chunks": n, "store": store}
+    return {
+        "graph": graph, "run_agent": run_agent, "n_chunks": n, "store": store,
+        "index_manager": graph.index_manager,
+    }
 
 
 try:
@@ -201,6 +204,7 @@ with st.sidebar:
                     st.divider()
 
             with st.expander("📤 Upload a policy document"):
+                from src.ingestion.index_manager import IndexConsistencyError
                 from src.ingestion.self_serve import UploadValidationError, ingest_document_for_tenant
 
                 up_title = st.text_input("Document title", key="upload_title")
@@ -211,19 +215,65 @@ with st.sidebar:
                 if st.button("Ingest document", key="upload_submit"):
                     try:
                         result = ingest_document_for_tenant(
-                            admin_tenant, up_title, up_content, up_category, pipeline["store"],
+                            admin_tenant, up_title, up_content, up_category,
+                            pipeline["index_manager"],
                         )
                         st.success(
                             f"Ingested `{result['doc_id']}` — {result['chunk_count']} chunks. "
-                            "Available immediately for semantic search. Note: exact-keyword "
-                            "(BM25) matching requires updating the canonical corpus; restarting "
-                            "alone does not add uploads to the static document set."
+                            "Available immediately for both semantic and exact-keyword search "
+                            "in this running process. Note: this does not survive a process "
+                            "restart yet — that requires a canonical document store, not yet built."
                         )
-                    except UploadValidationError as e:
+                    except (UploadValidationError, IndexConsistencyError) as e:
                         st.error(f"❌ {e}")
                     except Exception:
                         logger.error("self-serve ingestion failed", tenant=admin_tenant.tenant_id, exc_info=True)
                         st.error("❌ Ingestion failed. Check logs for details.")
+
+            with st.expander("🗑️ Update or delete a self-serve document"):
+                from src.ingestion.index_manager import IndexConsistencyError
+                from src.ingestion.self_serve import (
+                    OwnershipError,
+                    UploadValidationError,
+                    delete_document_for_tenant,
+                    update_document_for_tenant,
+                )
+
+                st.caption("Only documents you uploaded yourself (doc_id starting with "
+                           f"`SELFSERVE-{admin_tenant.airline.upper()}-`) can be updated or deleted here.")
+                ud_doc_id = st.text_input("Document ID", key="update_delete_doc_id")
+
+                col_update, col_delete = st.columns(2)
+                with col_update:
+                    ud_title = st.text_input("New title", key="update_title")
+                    ud_category = st.selectbox(
+                        "New category", options=list(CATEGORY_EMOJI.keys()), key="update_category",
+                    )
+                    ud_content = st.text_area("New document text", height=100, key="update_content")
+                    if st.button("Update document", key="update_submit"):
+                        try:
+                            result = update_document_for_tenant(
+                                admin_tenant, ud_doc_id, ud_title, ud_content, ud_category,
+                                pipeline["index_manager"],
+                            )
+                            st.success(f"Updated `{result['doc_id']}` — {result['chunk_count']} chunks.")
+                        except (UploadValidationError, OwnershipError, IndexConsistencyError) as e:
+                            st.error(f"❌ {e}")
+                        except Exception:
+                            logger.error("self-serve update failed", tenant=admin_tenant.tenant_id, exc_info=True)
+                            st.error("❌ Update failed. Check logs for details.")
+                with col_delete:
+                    st.write("")
+                    st.write("")
+                    if st.button("Delete document", key="delete_submit"):
+                        try:
+                            delete_document_for_tenant(admin_tenant, ud_doc_id, pipeline["index_manager"])
+                            st.success(f"Deleted `{ud_doc_id}`.")
+                        except OwnershipError as e:
+                            st.error(f"❌ {e}")
+                        except Exception:
+                            logger.error("self-serve delete failed", tenant=admin_tenant.tenant_id, exc_info=True)
+                            st.error("❌ Delete failed. Check logs for details.")
 
     st.divider()
 

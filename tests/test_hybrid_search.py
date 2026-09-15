@@ -81,6 +81,79 @@ def test_build_or_load_different_corpus_gets_new_cache(tmp_path):
     assert idx2.corpus_size == len(extra)
 
 
+def test_add_chunks_extends_corpus_and_is_searchable():
+    from copy import deepcopy
+    idx = BM25Index()
+    idx.build(deepcopy(SAMPLE_CHUNKS))
+    idx.add_chunks([
+        {"chunk_id": "doc_new", "doc_id": "doc_new", "text": "Vistara checked baggage is 20 kg.",
+         "metadata": {"category": "baggage", "airline": "vistara", "source_doc_id": "doc_new"}},
+    ])
+    assert idx.corpus_size == len(SAMPLE_CHUNKS) + 1
+    hit = next(r for r in idx.search("Vistara baggage", top_k=5) if r["chunk_id"] == "doc_new")
+    assert hit["metadata"]["airline"] == "vistara"
+
+
+def test_chunks_for_document_matches_source_doc_id():
+    from copy import deepcopy
+    idx = BM25Index()
+    chunks = deepcopy(SAMPLE_CHUNKS)
+    chunks[0]["metadata"]["source_doc_id"] = "doc_x"
+    idx.build(chunks)
+    assert [c["chunk_id"] for c in idx.chunks_for_document("doc_x")] == [chunks[0]["chunk_id"]]
+
+
+def test_remove_document_shrinks_corpus_and_returns_removed():
+    from copy import deepcopy
+    idx = BM25Index()
+    chunks = deepcopy(SAMPLE_CHUNKS)
+    chunks[0]["metadata"]["source_doc_id"] = "doc_x"
+    idx.build(chunks)
+
+    removed = idx.remove_document("doc_x")
+
+    assert len(removed) == 1
+    assert idx.corpus_size == len(SAMPLE_CHUNKS) - 1
+    assert idx.chunks_for_document("doc_x") == []
+
+
+def test_remove_document_missing_id_is_noop():
+    from copy import deepcopy
+    idx = BM25Index()
+    idx.build(deepcopy(SAMPLE_CHUNKS))
+    assert idx.remove_document("does-not-exist") == []
+    assert idx.corpus_size == len(SAMPLE_CHUNKS)
+
+
+def test_remove_last_document_leaves_index_empty_but_safe():
+    idx = BM25Index()
+    idx.build([{"chunk_id": "only", "doc_id": "only_doc", "text": "solo chunk",
+                "metadata": {"source_doc_id": "only_doc"}}])
+    idx.remove_document("only_doc")
+    assert idx.corpus_size == 0
+    with pytest.raises(RuntimeError):
+        idx.search("anything")
+
+
+def test_replace_document_swaps_content_in_one_rebuild():
+    from copy import deepcopy
+    idx = BM25Index()
+    chunks = deepcopy(SAMPLE_CHUNKS)
+    chunks[0]["doc_id"] = "doc_x"
+    chunks[0]["metadata"]["source_doc_id"] = "doc_x"
+    idx.build(chunks)
+
+    idx.replace_document("doc_x", [
+        {"chunk_id": "doc_x_v2", "doc_id": "doc_x", "text": "IndiGo revised baggage allowance is 20 kg.",
+         "metadata": {"source_doc_id": "doc_x", "airline": "indigo"}},
+    ])
+
+    remaining = idx.chunks_for_document("doc_x")
+    assert len(remaining) == 1
+    assert remaining[0]["chunk_id"] == "doc_x_v2"
+    assert idx.corpus_size == len(SAMPLE_CHUNKS)
+
+
 def test_rrf_merges_and_deduplicates():
     bm25 = [
         {"chunk_id": "a", "score": 0.9, "text": "t", "metadata": {}},

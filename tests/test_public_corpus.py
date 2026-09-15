@@ -48,8 +48,8 @@ def test_migration_never_publishes_changed_or_explicitly_private_payloads():
 
 def test_upload_is_private_even_with_public_sounding_title():
     from src.ingestion.self_serve import ingest_document_for_tenant
-    store=MagicMock()
+    manager=MagicMock()
     with patch('src.ingestion.self_serve.embed_chunks',side_effect=lambda chunks: chunks):
         ingest_document_for_tenant(TenantConfig('indigo','indigo','IndiGo','k'),
-                                  'Public airline policy','Private instructions. '*30,'baggage',store)
-    assert all(c['metadata']['visibility']=='private' for c in store.upsert.call_args.args[0])
+                                  'Public airline policy','Private instructions. '*30,'baggage',manager)
+    assert all(c['metadata']['visibility']=='private' for c in manager.add_document.call_args.args[0])
