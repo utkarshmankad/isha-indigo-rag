@@ -7,6 +7,7 @@ from typing import TypedDict
 from dotenv import load_dotenv
 from langgraph.graph import END, StateGraph
 
+from src.documents.document_store import DocumentStore
 from src.embedding.embedder import embed_batch
 from src.embedding.vector_store import QdrantVectorStore
 from src.ingestion.index_manager import IndexManager
@@ -135,7 +136,8 @@ def generate_answer(prompt: str) -> str:
 
 def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
     bm25_index = BM25Index.build_or_load(chunks)
-    index_manager = IndexManager(bm25_index, vector_store)
+    document_store = DocumentStore(vector_store.client)
+    index_manager = IndexManager(bm25_index, vector_store, document_store)
     engine = RetrievalEngine(vector_store)
 
     def select_tools_node(state: AgentState) -> dict:
@@ -419,6 +421,7 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
 
     compiled = workflow.compile()
     compiled.index_manager = index_manager
+    compiled.document_store = document_store
     return compiled
 
 

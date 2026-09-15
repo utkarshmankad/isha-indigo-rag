@@ -40,8 +40,10 @@ def test_ingest_document_tags_tenant_airline(mock_embed):
 
     assert result["chunk_count"] >= 1
     manager.add_document.assert_called_once()
-    (added_chunks,), _ = manager.add_document.call_args
+    (record, added_chunks), _ = manager.add_document.call_args
     assert all(c["metadata"]["airline"] == "indigo" for c in added_chunks)
+    assert record["airline"] == "indigo"
+    assert record["original_content"] == "x" * 100
 
 
 @patch("src.ingestion.self_serve.embed_chunks")
@@ -53,8 +55,9 @@ def test_ingest_document_cannot_be_tagged_to_another_airline(mock_embed):
 
     ingest_document_for_tenant(spicejet_tenant, "Test Policy", "x" * 100, "baggage", manager)
 
-    (added_chunks,), _ = manager.add_document.call_args
+    (record, added_chunks), _ = manager.add_document.call_args
     assert all(c["metadata"]["airline"] == "spicejet" for c in added_chunks)
+    assert record["airline"] == "spicejet"
 
 
 @patch("src.ingestion.self_serve.embed_chunks")
@@ -99,9 +102,29 @@ def test_update_document_calls_index_manager_for_owned_doc(mock_embed):
 
     assert result["doc_id"] == doc_id
     manager.update_document.assert_called_once()
-    (called_doc_id, chunks), _ = manager.update_document.call_args
+    (called_doc_id, record, chunks), _ = manager.update_document.call_args
     assert called_doc_id == doc_id
     assert all(c["metadata"]["airline"] == "indigo" for c in chunks)
+    assert record["original_content"] == "y" * 100
+    assert record["version"] == 1  # no document_store passed, so no previous record to bump from
+
+
+@patch("src.ingestion.self_serve.embed_chunks")
+def test_update_document_bumps_version_from_document_store(mock_embed):
+    mock_embed.side_effect = lambda chunks: [{**c, "embedding": [0.0] * 8} for c in chunks]
+    manager = MagicMock()
+    doc_store = MagicMock()
+    doc_store.get.return_value = {"version": 3, "created_at": "2026-01-01T00:00:00+00:00"}
+    doc_id = "SELFSERVE-INDIGO-old-title-123"
+
+    update_document_for_tenant(
+        TENANT, doc_id, "New Title", "y" * 100, "baggage", manager, doc_store,
+    )
+
+    doc_store.get.assert_called_once_with(doc_id)
+    (_, record, _), _ = manager.update_document.call_args
+    assert record["version"] == 4
+    assert record["created_at"] == "2026-01-01T00:00:00+00:00"
 
 
 def test_delete_document_requires_ownership():

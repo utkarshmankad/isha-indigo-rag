@@ -121,7 +121,7 @@ def init_pipeline() -> dict:
     graph = build_graph(chunks, store)
     return {
         "graph": graph, "run_agent": run_agent, "n_chunks": n, "store": store,
-        "index_manager": graph.index_manager,
+        "index_manager": graph.index_manager, "document_store": graph.document_store,
     }
 
 
@@ -212,17 +212,28 @@ with st.sidebar:
                     "Category", options=list(CATEGORY_EMOJI.keys()), key="upload_category",
                 )
                 up_content = st.text_area("Document text", height=150, key="upload_content")
+                up_source_url = st.text_input(
+                    "Authoritative source URL (optional)", key="upload_source_url",
+                )
+                up_effective_date = st.text_input(
+                    "Effective date, YYYY-MM-DD (optional)", key="upload_effective_date",
+                )
                 if st.button("Ingest document", key="upload_submit"):
                     try:
                         result = ingest_document_for_tenant(
                             admin_tenant, up_title, up_content, up_category,
                             pipeline["index_manager"],
+                            source_url=up_source_url or None,
+                            effective_date=up_effective_date or None,
                         )
                         st.success(
                             f"Ingested `{result['doc_id']}` — {result['chunk_count']} chunks. "
                             "Available immediately for both semantic and exact-keyword search "
-                            "in this running process. Note: this does not survive a process "
-                            "restart yet — that requires a canonical document store, not yet built."
+                            "in this running process, and its original text and source are "
+                            "preserved in the canonical document store. Note: the dense/keyword "
+                            "search indexes still do not survive a process restart yet — that "
+                            "requires replaying the canonical store back into them at startup, "
+                            "not yet built."
                         )
                     except (UploadValidationError, IndexConsistencyError) as e:
                         st.error(f"❌ {e}")
@@ -250,11 +261,19 @@ with st.sidebar:
                         "New category", options=list(CATEGORY_EMOJI.keys()), key="update_category",
                     )
                     ud_content = st.text_area("New document text", height=100, key="update_content")
+                    ud_source_url = st.text_input(
+                        "Authoritative source URL (optional)", key="update_source_url",
+                    )
+                    ud_effective_date = st.text_input(
+                        "Effective date, YYYY-MM-DD (optional)", key="update_effective_date",
+                    )
                     if st.button("Update document", key="update_submit"):
                         try:
                             result = update_document_for_tenant(
                                 admin_tenant, ud_doc_id, ud_title, ud_content, ud_category,
-                                pipeline["index_manager"],
+                                pipeline["index_manager"], pipeline["document_store"],
+                                source_url=ud_source_url or None,
+                                effective_date=ud_effective_date or None,
                             )
                             st.success(f"Updated `{result['doc_id']}` — {result['chunk_count']} chunks.")
                         except (UploadValidationError, OwnershipError, IndexConsistencyError) as e:
