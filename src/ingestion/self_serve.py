@@ -1,4 +1,4 @@
-"""Self-serve document ingestion (S5-T1, extended S9-T1).
+"""Self-serve document ingestion (S5-T1, extended S9-T1 and Weeks 3-4 item 1).
 
 Lets an authenticated tenant add, update, or delete a policy document in
 their own airline's scope without a maintainer running scripts/ingest.py by
@@ -7,14 +7,17 @@ building a single ad-hoc `doc` dict and forcing its `airline` tag to the
 tenant's own airline, so a tenant can never tag a document into another
 tenant's scope.
 
-All three operations go through IndexManager so the dense (Qdrant) and
-lexical (BM25) indexes stay consistent within the running process — see
-src/ingestion/index_manager.py for the consistency/rollback contract and its
-current limits (no cross-process persistence yet).
+All three operations go through IndexManager so the canonical record, the
+dense (Qdrant) index and the lexical (BM25) index stay consistent within the
+running process — see src/ingestion/index_manager.py for the
+consistency/rollback contract and its current limits, and
+src/documents/document_store.py for what the canonical record preserves
+(original un-chunked content, source URL, effective/verified dates).
 """
 import re
 from datetime import date, datetime, timezone
 
+from src.documents.document_store import DocumentStore, build_record
 from src.embedding.embedder import embed_chunks
 from src.ingestion.chunker import chunk_document
 from src.ingestion.index_manager import IndexManager
@@ -91,6 +94,10 @@ def ingest_document_for_tenant(
     content: str,
     category: str,
     index_manager: IndexManager,
+    *,
+    source_url: str | None = None,
+    effective_date: str | None = None,
+    verified_date: str | None = None,
 ) -> dict:
     """Chunk, embed, and add a single new document scoped to `tenant.airline`.
 
@@ -101,7 +108,12 @@ def ingest_document_for_tenant(
     doc_id = f"{_tenant_doc_prefix(tenant)}{_slugify(title)}-{int(datetime.now(timezone.utc).timestamp())}"
     chunks = _build_chunks(doc_id, title, content, category, tenant.airline)
     embedded = embed_chunks(chunks)
-    index_manager.add_document(embedded)
+    record = build_record(
+        doc_id=doc_id, title=title.strip(), category=category, airline=tenant.airline,
+        original_content=content, uploaded_by=tenant.tenant_id,
+        source_url=source_url, effective_date=effective_date, verified_date=verified_date,
+    )
+    index_manager.add_document(record, embedded)
 
     logger.info(
         "self-serve document ingested",
@@ -117,6 +129,11 @@ def update_document_for_tenant(
     content: str,
     category: str,
     index_manager: IndexManager,
+    document_store: DocumentStore | None = None,
+    *,
+    source_url: str | None = None,
+    effective_date: str | None = None,
+    verified_date: str | None = None,
 ) -> dict:
     """Replace an existing self-serve document's content in place, keeping
     its doc_id. Raises OwnershipError if `doc_id` was not this tenant's own
@@ -126,7 +143,14 @@ def update_document_for_tenant(
 
     chunks = _build_chunks(doc_id, title, content, category, tenant.airline)
     embedded = embed_chunks(chunks)
-    index_manager.update_document(doc_id, embedded)
+    previous = document_store.get(doc_id) if document_store else None
+    record = build_record(
+        doc_id=doc_id, title=title.strip(), category=category, airline=tenant.airline,
+        original_content=content, uploaded_by=tenant.tenant_id,
+        source_url=source_url, effective_date=effective_date, verified_date=verified_date,
+        previous=previous,
+    )
+    index_manager.update_document(doc_id, record, embedded)
 
     logger.info(
         "self-serve document updated",
@@ -136,8 +160,9 @@ def update_document_for_tenant(
 
 
 def delete_document_for_tenant(tenant, doc_id: str, index_manager: IndexManager) -> None:
-    """Remove a self-serve document from both indexes. Raises OwnershipError
-    if `doc_id` was not this tenant's own self-serve upload."""
+    """Remove a self-serve document from both indexes and its canonical
+    record. Raises OwnershipError if `doc_id` was not this tenant's own
+    self-serve upload."""
     _require_owned_doc_id(tenant, doc_id)
     index_manager.delete_document(doc_id)
     logger.info(

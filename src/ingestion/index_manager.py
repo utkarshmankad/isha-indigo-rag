@@ -1,16 +1,22 @@
-"""Keeps the dense (Qdrant) and lexical (BM25) indexes consistent for
-document add/update/delete outside the bundled static ingest path (S9-T1).
+"""Keeps the canonical record, dense (Qdrant) and lexical (BM25) indexes
+consistent for document add/update/delete outside the bundled static ingest
+path (S9-T1, extended for Weeks 3-4 item 1 with the canonical document
+store).
 
 Scope: within a single running process, a document add/update/delete either
-lands in both indexes or in neither — never in only one. There is no
-cross-process persistence here: a process restart still rebuilds BM25 only
-from the static bundled corpus (see docs/LOCAL-RECONCILIATION.md), so
-self-serve uploads made through this manager do not survive a restart until
-a canonical document store re-feeds them at startup. That is separate,
-larger, unauthorized-so-far scope.
+lands in all three of {canonical record, dense index, lexical index}, or
+none of them — never a subset. There is no cross-process persistence for
+the dense/lexical indexes: a process restart still rebuilds BM25 only from
+the static bundled corpus (see docs/LOCAL-RECONCILIATION.md), and the dense
+index only from whatever is already in Qdrant. The canonical record store
+(src/documents/document_store.py) IS itself durable/cross-process — it is
+the source of truth for a document's original content and provenance — but
+nothing yet re-derives dense/BM25 entries from it at startup. That
+replay-on-startup step is separate, larger, not-yet-authorized scope.
 """
 from threading import Lock
 
+from src.documents.document_store import DocumentStore
 from src.embedding.vector_store import QdrantVectorStore
 from src.observability.logging_config import get_logger
 from src.retrieval.hybrid_search import BM25Index
@@ -23,49 +29,65 @@ class IndexConsistencyError(RuntimeError):
 
 
 class IndexManager:
-    def __init__(self, bm25_index: BM25Index, vector_store: QdrantVectorStore) -> None:
+    def __init__(
+        self,
+        bm25_index: BM25Index,
+        vector_store: QdrantVectorStore,
+        document_store: DocumentStore | None = None,
+    ) -> None:
         self._bm25 = bm25_index
         self._store = vector_store
+        self._documents = document_store
         self._lock = Lock()
 
-    def add_document(self, chunks: list[dict]) -> None:
-        """Add a new document's embedded chunks to both indexes. If the BM25
-        side fails after the dense write succeeds, the dense write is rolled
-        back so the document is never vector-searchable without also being
-        keyword-searchable."""
+    def add_document(self, record: dict, chunks: list[dict]) -> None:
+        """Add a new document: canonical record first (durable, cheap,
+        idempotent), then dense chunks, then BM25. Any failure after the
+        canonical record write rolls that record back out too, so a failed
+        add never leaves an orphan canonical record with no searchable
+        content."""
         if not chunks:
             return
         doc_id = chunks[0]["doc_id"]
         with self._lock:
+            if self._documents:
+                self._documents.put(record)
             self._store.upsert(chunks)
             try:
                 self._bm25.add_chunks(chunks)
             except Exception:
-                logger.error("bm25 add failed, rolling back dense write", doc_id=doc_id)
+                logger.error("bm25 add failed, rolling back dense write and record", doc_id=doc_id)
                 self._store.delete_by_doc_id(doc_id)
+                if self._documents:
+                    self._documents.delete(doc_id)
                 raise IndexConsistencyError(
                     f"Failed to index '{doc_id}' for keyword search; upload rolled back."
                 ) from None
 
-    def update_document(self, doc_id: str, chunks: list[dict]) -> None:
-        """Replace `doc_id`'s chunks in both indexes. Writes the new dense
-        points before touching BM25 or removing the old dense points, so a
-        failure at any step leaves either the old document fully intact
-        (rollback) or the new document fully committed — never a mix."""
+    def update_document(self, doc_id: str, record: dict, chunks: list[dict]) -> None:
+        """Replace `doc_id` everywhere. The canonical record is overwritten
+        first; if anything after that fails, the previous record is
+        restored. New dense points are written before BM25 is swapped and
+        before old dense points are removed, so a failure at any step leaves
+        either the old document fully intact or the new document fully
+        committed — never a mix."""
         if not chunks:
             return
         with self._lock:
+            previous_record = self._documents.get(doc_id) if self._documents else None
             old_chunks = self._bm25.chunks_for_document(doc_id)
             old_chunk_ids = [c["chunk_id"] for c in old_chunks]
 
+            if self._documents:
+                self._documents.put(record)
             self._store.upsert(chunks)
             try:
                 self._bm25.replace_document(doc_id, chunks)
             except Exception:
-                logger.error(
-                    "bm25 replace failed, rolling back new dense write", doc_id=doc_id,
-                )
+                logger.error("bm25 replace failed, rolling back new dense write and record", doc_id=doc_id)
                 self._store.delete_by_chunk_ids([c["chunk_id"] for c in chunks])
+                if self._documents and previous_record:
+                    self._documents.put(previous_record)
                 raise IndexConsistencyError(
                     f"Failed to update '{doc_id}' for keyword search; update rolled back."
                 ) from None
@@ -74,28 +96,29 @@ class IndexManager:
                 try:
                     self._store.delete_by_chunk_ids(old_chunk_ids)
                 except Exception:
-                    # BM25 and the new dense points are already committed and
-                    # consistent with each other — the update itself
-                    # succeeded. Stale superseded dense points may briefly
-                    # duplicate in vector-only results until this is retried.
+                    # The canonical record, BM25 and the new dense points are
+                    # already committed and consistent with each other — the
+                    # update itself succeeded. Stale superseded dense points
+                    # may briefly duplicate in vector-only results until
+                    # this is retried.
                     logger.error(
                         "post-update cleanup of superseded dense points failed",
                         doc_id=doc_id,
                     )
 
     def delete_document(self, doc_id: str) -> None:
-        """Remove `doc_id` from both indexes. BM25 removal happens first
-        because it is cheap and fully in-memory: if the dense delete then
-        fails, the BM25 entries are restored so nothing is silently
-        keyword-unsearchable while still present in Qdrant."""
+        """Remove `doc_id` from the lexical index, the dense index, and the
+        canonical record, in that order — BM25 first because it is cheap and
+        fully in-memory to restore, the canonical record last because it is
+        the cheapest to leave in place if an earlier step fails."""
         with self._lock:
             removed = self._bm25.remove_document(doc_id)
             try:
                 self._store.delete_by_doc_id(doc_id)
             except Exception:
-                logger.error(
-                    "dense delete failed, restoring bm25 entries", doc_id=doc_id,
-                )
+                logger.error("dense delete failed, restoring bm25 entries", doc_id=doc_id)
                 if removed:
                     self._bm25.add_chunks(removed)
                 raise
+            if self._documents:
+                self._documents.delete(doc_id)
