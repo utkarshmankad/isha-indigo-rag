@@ -155,3 +155,41 @@ def test_delete_document_restores_bm25_and_keeps_record_on_dense_failure():
 
     assert bm25.chunks_for_document("doc_a")
     documents.delete.assert_not_called()
+
+
+def test_set_status_updates_bm25_dense_and_record():
+    bm25 = _bm25_with_base()
+    store = MagicMock()
+    documents = MagicMock()
+    manager = IndexManager(bm25, store, documents)
+
+    manager.set_status("doc_a", "approved")
+
+    assert bm25.chunks_for_document("doc_a")[0]["metadata"]["status"] == "approved"
+    store.set_status_by_doc_id.assert_called_once_with("doc_a", "approved", superseded_by=None)
+    documents.patch.assert_called_once_with("doc_a", status="approved", superseded_by=None)
+
+
+def test_set_status_with_superseded_by_propagates_to_all_three():
+    bm25 = _bm25_with_base()
+    store = MagicMock()
+    documents = MagicMock()
+    manager = IndexManager(bm25, store, documents)
+
+    manager.set_status("doc_a", "superseded", superseded_by="doc_new")
+
+    chunk = bm25.chunks_for_document("doc_a")[0]
+    assert chunk["metadata"]["status"] == "superseded"
+    assert chunk["metadata"]["superseded_by"] == "doc_new"
+    store.set_status_by_doc_id.assert_called_once_with("doc_a", "superseded", superseded_by="doc_new")
+    documents.patch.assert_called_once_with("doc_a", status="superseded", superseded_by="doc_new")
+
+
+def test_set_status_works_without_document_store():
+    bm25 = _bm25_with_base()
+    store = MagicMock()
+    manager = IndexManager(bm25, store)
+
+    manager.set_status("doc_a", "rejected")
+
+    store.set_status_by_doc_id.assert_called_once_with("doc_a", "rejected", superseded_by=None)

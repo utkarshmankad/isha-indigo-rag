@@ -3,10 +3,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.ingestion.self_serve import (
+    DuplicateDocumentError,
     OwnershipError,
     UploadValidationError,
+    approve_document_for_tenant,
     delete_document_for_tenant,
     ingest_document_for_tenant,
+    reject_document_for_tenant,
     update_document_for_tenant,
     validate_upload,
 )
@@ -42,7 +45,9 @@ def test_ingest_document_tags_tenant_airline(mock_embed):
     manager.add_document.assert_called_once()
     (record, added_chunks), _ = manager.add_document.call_args
     assert all(c["metadata"]["airline"] == "indigo" for c in added_chunks)
+    assert all(c["metadata"]["status"] == "pending" for c in added_chunks)
     assert record["airline"] == "indigo"
+    assert record["status"] == "pending"
     assert record["original_content"] == "x" * 100
 
 
@@ -125,6 +130,101 @@ def test_update_document_bumps_version_from_document_store(mock_embed):
     (_, record, _), _ = manager.update_document.call_args
     assert record["version"] == 4
     assert record["created_at"] == "2026-01-01T00:00:00+00:00"
+
+
+@patch("src.ingestion.self_serve.embed_chunks")
+def test_ingest_document_blocks_duplicate_content_by_default(mock_embed):
+    mock_embed.side_effect = lambda chunks: [{**c, "embedding": [0.0] * 8} for c in chunks]
+    manager = MagicMock()
+    doc_store = MagicMock()
+    doc_store.find_by_content_hash.return_value = {"doc_id": "SELFSERVE-INDIGO-existing-1"}
+
+    with pytest.raises(DuplicateDocumentError):
+        ingest_document_for_tenant(TENANT, "Test Policy", "x" * 100, "baggage", manager, doc_store)
+
+    manager.add_document.assert_not_called()
+
+
+@patch("src.ingestion.self_serve.embed_chunks")
+def test_ingest_document_force_bypasses_dedup_check(mock_embed):
+    mock_embed.side_effect = lambda chunks: [{**c, "embedding": [0.0] * 8} for c in chunks]
+    manager = MagicMock()
+    doc_store = MagicMock()
+    doc_store.find_by_content_hash.return_value = {"doc_id": "SELFSERVE-INDIGO-existing-1"}
+
+    ingest_document_for_tenant(
+        TENANT, "Test Policy", "x" * 100, "baggage", manager, doc_store, force=True,
+    )
+
+    manager.add_document.assert_called_once()
+
+
+@patch("src.ingestion.self_serve.embed_chunks")
+def test_ingest_document_no_dedup_check_without_document_store(mock_embed):
+    mock_embed.side_effect = lambda chunks: [{**c, "embedding": [0.0] * 8} for c in chunks]
+    manager = MagicMock()
+
+    ingest_document_for_tenant(TENANT, "Test Policy", "x" * 100, "baggage", manager)
+
+    manager.add_document.assert_called_once()
+
+
+@patch("src.ingestion.self_serve.embed_chunks")
+def test_ingest_document_supersedes_requires_ownership(mock_embed):
+    mock_embed.side_effect = lambda chunks: [{**c, "embedding": [0.0] * 8} for c in chunks]
+    manager = MagicMock()
+
+    with pytest.raises(OwnershipError):
+        ingest_document_for_tenant(
+            TENANT, "Test Policy", "x" * 100, "baggage", manager,
+            supersedes="SELFSERVE-SPICEJET-other-doc-1",
+        )
+    manager.add_document.assert_not_called()
+
+
+@patch("src.ingestion.self_serve.embed_chunks")
+def test_ingest_document_supersedes_marks_old_doc(mock_embed):
+    mock_embed.side_effect = lambda chunks: [{**c, "embedding": [0.0] * 8} for c in chunks]
+    manager = MagicMock()
+    old_doc_id = "SELFSERVE-INDIGO-old-doc-1"
+
+    result = ingest_document_for_tenant(
+        TENANT, "Test Policy", "x" * 100, "baggage", manager, supersedes=old_doc_id,
+    )
+
+    manager.set_status.assert_called_once_with(old_doc_id, "superseded", superseded_by=result["doc_id"])
+
+
+def test_approve_document_requires_ownership():
+    manager = MagicMock()
+    with pytest.raises(OwnershipError):
+        approve_document_for_tenant(TENANT, "SELFSERVE-SPICEJET-other-doc-123", manager)
+    manager.set_status.assert_not_called()
+
+
+def test_approve_document_sets_status_approved():
+    manager = MagicMock()
+    doc_id = "SELFSERVE-INDIGO-old-title-123"
+
+    approve_document_for_tenant(TENANT, doc_id, manager)
+
+    manager.set_status.assert_called_once_with(doc_id, "approved")
+
+
+def test_reject_document_requires_ownership():
+    manager = MagicMock()
+    with pytest.raises(OwnershipError):
+        reject_document_for_tenant(TENANT, "SELFSERVE-SPICEJET-other-doc-123", manager)
+    manager.set_status.assert_not_called()
+
+
+def test_reject_document_sets_status_rejected():
+    manager = MagicMock()
+    doc_id = "SELFSERVE-INDIGO-old-title-123"
+
+    reject_document_for_tenant(TENANT, doc_id, manager)
+
+    manager.set_status.assert_called_once_with(doc_id, "rejected")
 
 
 def test_delete_document_requires_ownership():

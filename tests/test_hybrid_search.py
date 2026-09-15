@@ -1,5 +1,5 @@
 import pytest
-from src.retrieval.hybrid_search import BM25Index, reciprocal_rank_fusion
+from src.retrieval.hybrid_search import BM25Index, hybrid_search, reciprocal_rank_fusion
 
 SAMPLE_CHUNKS = [
     {
@@ -152,6 +152,33 @@ def test_replace_document_swaps_content_in_one_rebuild():
     assert len(remaining) == 1
     assert remaining[0]["chunk_id"] == "doc_x_v2"
     assert idx.corpus_size == len(SAMPLE_CHUNKS)
+
+
+class _EmptyVectorStore:
+    def query(self, *args, **kwargs):
+        return []
+
+
+def test_hybrid_search_excludes_pending_and_rejected_chunks():
+    idx = BM25Index()
+    idx.build([
+        {"chunk_id": "approved", "doc_id": "d1", "text": "IndiGo baggage allowance policy.",
+         "metadata": {"visibility": "public", "airline": "indigo", "status": "approved"}},
+        {"chunk_id": "pending", "doc_id": "d2", "text": "IndiGo baggage allowance draft policy.",
+         "metadata": {"visibility": "public", "airline": "indigo", "status": "pending"}},
+        {"chunk_id": "rejected", "doc_id": "d3", "text": "IndiGo baggage allowance old draft.",
+         "metadata": {"visibility": "public", "airline": "indigo", "status": "rejected"}},
+        {"chunk_id": "no_status", "doc_id": "d4", "text": "IndiGo baggage allowance bundled policy.",
+         "metadata": {"visibility": "public", "airline": "indigo"}},
+    ])
+
+    results = hybrid_search("baggage allowance", [0.0], idx, _EmptyVectorStore(), top_k=10)
+
+    ids = {r["chunk_id"] for r in results}
+    assert "approved" in ids
+    assert "no_status" in ids
+    assert "pending" not in ids
+    assert "rejected" not in ids
 
 
 def test_rrf_merges_and_deduplicates():

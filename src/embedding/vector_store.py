@@ -20,6 +20,11 @@ from src.observability.logging_config import get_logger
 logger = get_logger("embedding.vector_store")
 
 _BATCH_SIZE = 100
+# Bundled corpus chunks have no "status" field at all and are treated as
+# always-approved. Self-serve chunks get one via chunk_document's doc dict
+# and must clear approval before they're searchable — see
+# docs/INDEX-CONSISTENCY.md.
+_UNSEARCHABLE_STATUSES = ["pending", "rejected", "superseded"]
 
 
 class QdrantVectorStore:
@@ -127,7 +132,8 @@ class QdrantVectorStore:
             if owned:
                 allowed.append(FieldCondition(key="airline", match=MatchAny(any=owned)))
             must.append(Filter(should=allowed))
-        qdrant_filter = Filter(must=must)
+        must_not = [FieldCondition(key="status", match=MatchAny(any=_UNSEARCHABLE_STATUSES))]
+        qdrant_filter = Filter(must=must, must_not=must_not)
 
         response = self.client.query_points(
             collection_name=self.collection_name,
@@ -219,6 +225,22 @@ class QdrantVectorStore:
             ),
         )
         print(f"[vector_store] Deleted {len(chunk_ids)} point(s) by chunk_id.")
+
+    def set_status_by_doc_id(self, doc_id: str, status: str, *, superseded_by: str | None = None) -> None:
+        """Patch the `status` payload field on every chunk for `doc_id`
+        without touching vectors or any other payload field — used for
+        approve/reject/supersede, which are metadata transitions, not
+        content changes."""
+        payload = {"status": status}
+        if superseded_by is not None:
+            payload["superseded_by"] = superseded_by
+        self.client.set_payload(
+            collection_name=self.collection_name,
+            payload=payload,
+            points=FilterSelector(
+                filter=Filter(must=[FieldCondition(key="source_doc_id", match=MatchValue(value=doc_id))])
+            ),
+        )
 
     def delete_by_airline(self, airline: str) -> None:
         self.client.delete(

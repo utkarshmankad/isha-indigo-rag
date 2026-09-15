@@ -29,6 +29,47 @@ def test_public_search_excludes_private_legacy_and_other_airline_uploads():
     store.client.close()
 
 
+def test_query_excludes_pending_rejected_and_superseded_by_default():
+    store=QdrantVectorStore.__new__(QdrantVectorStore)
+    store.client=QdrantClient(':memory:');store.collection_name='kb'
+    store.client.create_collection('kb',vectors_config=VectorParams(size=3,distance=Distance.COSINE))
+    rows=[
+        ('approved','approved'),('pending','pending'),('rejected','rejected'),
+        ('superseded','superseded'),('bundled',None),
+    ]
+    points=[]
+    for i,(chunk_id,status) in enumerate(rows):
+        payload={'chunk_id':chunk_id,'text':'baggage policy','airline':'indigo','visibility':'public'}
+        if status: payload['status']=status
+        points.append(PointStruct(id=i,vector=[1.,0.,0.],payload=payload))
+    store.client.upsert('kb',points=points)
+
+    public=store.query([1.,0.,0.],top_k=10)
+    assert {r['chunk_id'] for r in public} == {'approved','bundled'}
+
+    tenant=TenantConfig('indigo','indigo','IndiGo','key')
+    scoped=store.query_for_tenant(tenant,[1.,0.,0.],top_k=10)
+    assert {r['chunk_id'] for r in scoped} == {'approved','bundled'}
+    store.client.close()
+
+
+def test_set_status_by_doc_id_patches_payload_without_touching_vector():
+    store=QdrantVectorStore.__new__(QdrantVectorStore)
+    store.client=QdrantClient(':memory:');store.collection_name='kb'
+    store.client.create_collection('kb',vectors_config=VectorParams(size=3,distance=Distance.COSINE))
+    store.client.upsert('kb',points=[PointStruct(
+        id=0,vector=[1.,0.,0.],
+        payload={'chunk_id':'c0','text':'t','airline':'indigo','visibility':'public','source_doc_id':'doc_1','status':'pending'},
+    )])
+
+    store.set_status_by_doc_id('doc_1','approved')
+
+    fetched=store.client.retrieve('kb',ids=[0],with_payload=True,with_vectors=True)[0]
+    assert fetched.payload['status']=='approved'
+    assert fetched.vector==[1.,0.,0.]
+    store.client.close()
+
+
 def test_migration_never_publishes_changed_or_explicitly_private_payloads():
     client=MagicMock()
     chunks=[{'chunk_id':str(i),'text':'public text','metadata':{'source_doc_id':str(i),'airline':'indigo'}} for i in range(3)]

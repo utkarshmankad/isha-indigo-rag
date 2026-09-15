@@ -122,3 +122,20 @@ class IndexManager:
                 raise
             if self._documents:
                 self._documents.delete(doc_id)
+
+    def set_status(self, doc_id: str, status: str, *, superseded_by: str | None = None) -> None:
+        """Approve/reject/supersede: a metadata-only transition, not a
+        content change. Updates the canonical record, the dense chunks and
+        the in-memory BM25 chunks for `doc_id` so retrieval's status filter
+        (see docs/INDEX-CONSISTENCY.md) sees the change immediately. These
+        three patches are independent and idempotent — safe to retry on
+        partial failure, unlike add/update/delete there is no compensating
+        rollback here."""
+        with self._lock:
+            for chunk in self._bm25.chunks_for_document(doc_id):
+                chunk["metadata"]["status"] = status
+                if superseded_by is not None:
+                    chunk["metadata"]["superseded_by"] = superseded_by
+            self._store.set_status_by_doc_id(doc_id, status, superseded_by=superseded_by)
+            if self._documents:
+                self._documents.patch(doc_id, status=status, superseded_by=superseded_by)

@@ -205,7 +205,11 @@ with st.sidebar:
 
             with st.expander("📤 Upload a policy document"):
                 from src.ingestion.index_manager import IndexConsistencyError
-                from src.ingestion.self_serve import UploadValidationError, ingest_document_for_tenant
+                from src.ingestion.self_serve import (
+                    DuplicateDocumentError,
+                    UploadValidationError,
+                    ingest_document_for_tenant,
+                )
 
                 up_title = st.text_input("Document title", key="upload_title")
                 up_category = st.selectbox(
@@ -218,28 +222,70 @@ with st.sidebar:
                 up_effective_date = st.text_input(
                     "Effective date, YYYY-MM-DD (optional)", key="upload_effective_date",
                 )
+                up_supersedes = st.text_input(
+                    "Doc ID this replaces (optional, must be your own upload)", key="upload_supersedes",
+                )
+                up_force = st.checkbox(
+                    "Upload anyway if an identical document already exists", key="upload_force",
+                )
                 if st.button("Ingest document", key="upload_submit"):
                     try:
                         result = ingest_document_for_tenant(
                             admin_tenant, up_title, up_content, up_category,
-                            pipeline["index_manager"],
+                            pipeline["index_manager"], pipeline["document_store"],
                             source_url=up_source_url or None,
                             effective_date=up_effective_date or None,
+                            supersedes=up_supersedes or None,
+                            force=up_force,
                         )
                         st.success(
-                            f"Ingested `{result['doc_id']}` — {result['chunk_count']} chunks. "
-                            "Available immediately for both semantic and exact-keyword search "
-                            "in this running process, and its original text and source are "
-                            "preserved in the canonical document store. Note: the dense/keyword "
-                            "search indexes still do not survive a process restart yet — that "
-                            "requires replaying the canonical store back into them at startup, "
-                            "not yet built."
+                            f"Ingested `{result['doc_id']}` — {result['chunk_count']} chunks, "
+                            "status `pending`. Original text and source are preserved in the "
+                            "canonical document store. It will not appear in answers until "
+                            "approved below. Note: the dense/keyword search indexes still do "
+                            "not survive a process restart — that requires replaying the "
+                            "canonical store back into them at startup, not yet built."
                         )
+                    except DuplicateDocumentError as e:
+                        st.warning(f"⚠️ {e}")
                     except (UploadValidationError, IndexConsistencyError) as e:
                         st.error(f"❌ {e}")
                     except Exception:
                         logger.error("self-serve ingestion failed", tenant=admin_tenant.tenant_id, exc_info=True)
                         st.error("❌ Ingestion failed. Check logs for details.")
+
+            with st.expander("✅ Review queue — approve or reject uploads"):
+                from src.ingestion.self_serve import (
+                    OwnershipError,
+                    approve_document_for_tenant,
+                    reject_document_for_tenant,
+                )
+
+                pending_docs = pipeline["document_store"].list_for_airline(
+                    admin_tenant.airline, status="pending",
+                )
+                if not pending_docs:
+                    st.caption("No documents awaiting review.")
+                for doc in pending_docs:
+                    st.markdown(
+                        f"**{doc['title']}** — `{doc['doc_id']}` (v{doc['version']})  \n"
+                        f"{doc.get('source_url') or 'no source URL'} · "
+                        f"effective {doc.get('effective_date') or 'unspecified'}"
+                    )
+                    review_cols = st.columns(2)
+                    if review_cols[0].button("Approve", key=f"approve_{doc['doc_id']}"):
+                        try:
+                            approve_document_for_tenant(admin_tenant, doc["doc_id"], pipeline["index_manager"])
+                            st.rerun()
+                        except OwnershipError as e:
+                            st.error(f"❌ {e}")
+                    if review_cols[1].button("Reject", key=f"reject_{doc['doc_id']}"):
+                        try:
+                            reject_document_for_tenant(admin_tenant, doc["doc_id"], pipeline["index_manager"])
+                            st.rerun()
+                        except OwnershipError as e:
+                            st.error(f"❌ {e}")
+                    st.divider()
 
             with st.expander("🗑️ Update or delete a self-serve document"):
                 from src.ingestion.index_manager import IndexConsistencyError
@@ -253,6 +299,15 @@ with st.sidebar:
                 st.caption("Only documents you uploaded yourself (doc_id starting with "
                            f"`SELFSERVE-{admin_tenant.airline.upper()}-`) can be updated or deleted here.")
                 ud_doc_id = st.text_input("Document ID", key="update_delete_doc_id")
+                if ud_doc_id and st.button("Show version history", key="show_history"):
+                    versions = pipeline["document_store"].list_versions(ud_doc_id)
+                    if not versions:
+                        st.caption("No canonical record found for this doc_id.")
+                    for v in versions:
+                        st.caption(
+                            f"v{v['version']} — {v['status']} — updated {v['updated_at']} "
+                            f"by {v['uploaded_by']}"
+                        )
 
                 col_update, col_delete = st.columns(2)
                 with col_update:

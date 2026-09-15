@@ -12,6 +12,10 @@ RRF_K = 60
 _BM25_CACHE_ROOT = ".bm25_cache"
 _CACHE_SCHEMA = 2
 _TOKENIZER_VERSION = 1
+# Mirrors vector_store._UNSEARCHABLE_STATUSES: bundled corpus chunks have no
+# "status" field and are always-approved; self-serve chunks must clear
+# approval first. See docs/INDEX-CONSISTENCY.md.
+_UNSEARCHABLE_STATUSES = {"pending", "rejected", "superseded"}
 
 
 def _tokenize(text: str) -> list[str]:
@@ -182,6 +186,7 @@ def hybrid_search(
     bm25_fetch_k = bm25_index.corpus_size if (filters or airline_filter) else fetch_k
 
     bm25_results = bm25_index.search(query, top_k=bm25_fetch_k)
+    bm25_results = [r for r in bm25_results if r["metadata"].get("status") not in _UNSEARCHABLE_STATUSES]
     if filters:
         bm25_results = [
             r for r in bm25_results
