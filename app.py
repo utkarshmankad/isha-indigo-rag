@@ -182,6 +182,24 @@ with st.sidebar:
                     "no token-usage tracking wired up yet."
                 )
 
+            with st.expander("🚨 Escalation queue"):
+                from src.escalation.queue import list_pending_escalations, resolve_escalation
+
+                pending = list_pending_escalations(admin_tenant.airline)
+                if not pending:
+                    st.caption("No pending escalations.")
+                for e in pending:
+                    st.markdown(
+                        f"**{e['query']}**  \n"
+                        f"retrieval similarity: `{e['confidence']:.2f}` · {e['timestamp']}"
+                    )
+                    if st.button("Mark resolved", key=f"resolve_{e['escalation_id']}"):
+                        if resolve_escalation(e["escalation_id"], admin_tenant.airline):
+                            st.rerun()
+                        else:
+                            st.error("Could not resolve this escalation. Try again.")
+                    st.divider()
+
             with st.expander("📤 Upload a policy document"):
                 from src.ingestion.self_serve import UploadValidationError, ingest_document_for_tenant
 

@@ -11,7 +11,7 @@ from src.tenancy.registry import TenantConfig
 def _fixed_registry(monkeypatch):
     fake = {
         "indigo": TenantConfig("indigo", "indigo", "IndiGo (6E)", "indigo-secret-key", "indigo-admin-key"),
-        "spicejet": TenantConfig("spicejet", "spicejet", "SpiceJet (SG)", "sj-secret-key"),
+        "spicejet": TenantConfig("spicejet", "spicejet", "SpiceJet (SG)", "sj-secret-key", "sj-admin-key"),
     }
     monkeypatch.setattr("src.tenancy.registry.TENANTS", fake)
     return fake
@@ -68,6 +68,34 @@ def test_query_with_valid_key_calls_tenant_scoped_agent(client):
     assert tenant_arg.airline == "indigo"
 
 
+def test_query_response_sources_include_traceable_citation(client):
+    api_main._pipeline["graph"] = MagicMock()
+    fake_state = {
+        "answer": "You may carry 7kg.",
+        "confidence": 0.8,
+        "retrieved_chunks": [
+            {
+                "score": 0.91,
+                "metadata": {
+                    "title": "Carry-On Baggage Policy",
+                    "category": "baggage",
+                    "source_doc_id": "BAG-001",
+                    "chunk_index": 2,
+                },
+            },
+        ],
+    }
+    with patch("src.api.main.run_agent_for_tenant", return_value=fake_state):
+        resp = client.post(
+            "/v1/query", json={"query": "baggage allowance?"},
+            headers={"X-API-Key": "indigo-secret-key"},
+        )
+    assert resp.status_code == 200
+    source = resp.json()["sources"][0]
+    assert source["source_doc_id"] == "BAG-001"
+    assert source["section"] == 3  # chunk_index is 0-based, section is human-facing 1-based
+
+
 def test_spicejet_key_cannot_scope_to_indigo(client):
     """A valid key always resolves to its own tenant's airline, never a
     caller-requested one — the request body has no airline field at all."""
@@ -112,3 +140,81 @@ def test_admin_metrics_scoped_to_own_tenant(client):
     body = resp.json()
     assert body["airline"] == "indigo"
     assert body["query_count"] == 1  # not 2 — spicejet's entry must not leak in
+
+
+def test_admin_escalations_requires_valid_key(client):
+    resp = client.get("/v1/admin/escalations", headers={"X-API-Key": "wrong-key"})
+    assert resp.status_code == 401
+
+
+def test_admin_escalations_scoped_to_own_tenant(client, tmp_path, monkeypatch):
+    import src.escalation.queue as escalation_queue
+
+    monkeypatch.setattr(escalation_queue, "ESCALATION_FILE", str(tmp_path / "escalations.jsonl"))
+    escalation_queue.enqueue_escalation("q1", "indigo", 0.1, "corr-1")
+    escalation_queue.enqueue_escalation("q2", "spicejet", 0.1, "corr-2")
+
+    resp = client.get("/v1/admin/escalations", headers={"X-Admin-Key": "indigo-admin-key"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["query"] == "q1"
+
+
+def test_admin_resolve_escalation(client, tmp_path, monkeypatch):
+    import src.escalation.queue as escalation_queue
+
+    monkeypatch.setattr(escalation_queue, "ESCALATION_FILE", str(tmp_path / "escalations.jsonl"))
+    escalation_id = escalation_queue.enqueue_escalation("q1", "indigo", 0.1, "corr-1")
+
+    resp = client.post(
+        f"/v1/admin/escalations/{escalation_id}/resolve", headers={"X-Admin-Key": "indigo-admin-key"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "resolved"
+
+    follow_up = client.get("/v1/admin/escalations", headers={"X-Admin-Key": "indigo-admin-key"})
+    assert follow_up.json() == []
+
+
+def test_admin_resolve_escalation_cross_tenant_rejected(client, tmp_path, monkeypatch):
+    import src.escalation.queue as escalation_queue
+
+    monkeypatch.setattr(escalation_queue, "ESCALATION_FILE", str(tmp_path / "escalations.jsonl"))
+    escalation_id = escalation_queue.enqueue_escalation("q1", "indigo", 0.1, "corr-1")
+
+    resp = client.post(
+        f"/v1/admin/escalations/{escalation_id}/resolve", headers={"X-Admin-Key": "sj-admin-key"},
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.parametrize("header", ["X-API-Key", "X-Admin-Key"])
+def test_staff_cannot_manage_escalations(client, header):
+    headers = {header: "indigo-secret-key"}
+    assert client.get("/v1/admin/escalations", headers=headers).status_code == 401
+    assert client.post("/v1/admin/escalations/example/resolve", headers=headers).status_code == 401
+
+
+@pytest.mark.parametrize("public,refused,error,billed", [
+    (False, False, None, True),
+    (False, True, None, False),
+    (False, False, "retrieval", False),
+    (True, False, None, False),
+])
+def test_billing_only_successful_staff_answers(client, public, refused, error, billed):
+    state = {"answer": "Answer", "confidence": 0.8, "retrieved_chunks": [],
+             "refused": refused, "stage_error": error}
+    runner = "run_agent" if public else "run_agent_for_tenant"
+    with patch.object(api_main, "ensure_pipeline", return_value=True), \
+         patch.object(api_main, runner, return_value=state), \
+         patch.object(api_main, "record_query_usage") as usage:
+        api_main._pipeline["graph"] = MagicMock()
+        response = client.post("/v1/public/query" if public else "/v1/query",
+                               json={"query": "what is the baggage allowance"},
+                               headers={} if public else {"X-API-Key": "indigo-secret-key"})
+    assert response.status_code == (503 if error else 200)
+    if billed:
+        usage.assert_called_once_with("indigo", response.json()["correlation_id"])
+    else:
+        usage.assert_not_called()

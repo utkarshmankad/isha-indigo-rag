@@ -129,6 +129,7 @@ def chunk_document(doc: dict) -> list[dict]:
                 'doc_type': doc['doc_type'],
                 'last_updated': doc['last_updated'],
                 'source_doc_id': doc['id'],
+                'chunk_index': i,
                 'visibility': doc.get('visibility', 'private'),
             },
         })
