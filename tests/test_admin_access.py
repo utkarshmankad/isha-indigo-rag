@@ -60,6 +60,14 @@ def test_widget_contains_no_privileged_key():
     assert '/v1/public/query' in widget
 
 
+def test_widget_sends_history_and_renders_clickable_citations():
+    widget=(Path(__file__).resolve().parents[1]/'static/widget.html').read_text()
+    assert 'history' in widget
+    assert 'sessionStorage' in widget  # per-tab only, never localStorage/cross-session
+    assert 'source_url' in widget
+    assert 'target = "_blank"' in widget or "target = '_blank'" in widget
+
+
 @pytest.mark.parametrize('next_scope',[('all',None),('indigo',None),('spicejet','spicejet')])
 def test_private_chat_is_cleared_when_view_or_auth_changes(next_scope):
     from src.security.session_scope import reset_chat_scope

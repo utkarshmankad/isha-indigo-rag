@@ -248,6 +248,39 @@ def test_get_version_history_returns_versions_for_owned_doc():
     doc_store.list_versions.assert_called_once_with(doc_id)
 
 
+@patch("src.ingestion.self_serve.embed_chunks")
+def test_ingest_document_carries_source_url_onto_chunk_metadata(mock_embed):
+    """Regression: source_url was previously only recorded on the canonical
+    DocumentStore record, never on the searchable chunks — so a citation
+    could never show it."""
+    mock_embed.side_effect = lambda chunks: [{**c, "embedding": [0.0] * 8} for c in chunks]
+    manager = MagicMock()
+
+    ingest_document_for_tenant(
+        TENANT, "Test Policy", "x" * 100, "baggage", manager,
+        source_url="https://example.com/policy", effective_date="2026-01-01",
+    )
+
+    (_, added_chunks), _ = manager.add_document.call_args
+    assert all(c["metadata"]["source_url"] == "https://example.com/policy" for c in added_chunks)
+    assert all(c["metadata"]["effective_date"] == "2026-01-01" for c in added_chunks)
+
+
+@patch("src.ingestion.self_serve.embed_chunks")
+def test_update_document_carries_source_url_onto_chunk_metadata(mock_embed):
+    mock_embed.side_effect = lambda chunks: [{**c, "embedding": [0.0] * 8} for c in chunks]
+    manager = MagicMock()
+    doc_id = "SELFSERVE-INDIGO-old-title-123"
+
+    update_document_for_tenant(
+        TENANT, doc_id, "New Title", "y" * 100, "baggage", manager,
+        source_url="https://example.com/updated-policy",
+    )
+
+    (_, _, chunks), _ = manager.update_document.call_args
+    assert all(c["metadata"]["source_url"] == "https://example.com/updated-policy" for c in chunks)
+
+
 def test_delete_document_requires_ownership():
     manager = MagicMock()
     with pytest.raises(OwnershipError):

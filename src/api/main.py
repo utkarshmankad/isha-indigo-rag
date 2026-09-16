@@ -119,6 +119,10 @@ class SourceOut(BaseModel):
     score: float
     source_doc_id: str
     section: int | None = Field(default=None, description="1-based chunk position, not an official policy section")
+    source_url: str | None = Field(
+        default=None,
+        description="Authoritative source URL, when the document has one on record — not verified by ISHA itself",
+    )
 
 
 class QueryResponse(BaseModel):
@@ -296,6 +300,7 @@ def answer_query(req: QueryRequest, tenant: TenantConfig | None = None) -> Query
                 section=c["metadata"]["chunk_index"] + 1
                 if isinstance(c["metadata"].get("chunk_index"), int)
                 else None,
+                source_url=c["metadata"].get("source_url"),
             )
             for c in state["retrieved_chunks"]
         ],
