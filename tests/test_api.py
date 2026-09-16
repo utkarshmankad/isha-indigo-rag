@@ -334,6 +334,73 @@ def test_public_attach_contact_info_requires_no_auth(client, tmp_path, monkeypat
     assert resp.status_code == 200
 
 
+def test_public_submit_feedback_requires_logged_correlation_id(client, tmp_path, monkeypatch):
+    import src.feedback.collector as feedback_collector
+
+    monkeypatch.setattr(feedback_collector, "FEEDBACK_FILE", str(tmp_path / "feedback.jsonl"))
+    resp = client.post("/v1/public/feedback/nonexistent-corr", json={"rating": "up"})
+    assert resp.status_code == 404
+
+
+def test_public_submit_feedback_rejects_invalid_rating(client, tmp_path, monkeypatch):
+    import src.feedback.collector as feedback_collector
+
+    monkeypatch.setattr(feedback_collector, "FEEDBACK_FILE", str(tmp_path / "feedback.jsonl"))
+    with patch.object(feedback_collector, "read_logs", return_value=[{"correlation_id": "corr-1", "airline": "indigo"}]):
+        resp = client.post("/v1/public/feedback/corr-1", json={"rating": "sideways"})
+    assert resp.status_code == 400
+
+
+def test_public_submit_feedback_records_and_scopes_to_looked_up_airline(client, tmp_path, monkeypatch):
+    import src.feedback.collector as feedback_collector
+
+    monkeypatch.setattr(feedback_collector, "FEEDBACK_FILE", str(tmp_path / "feedback.jsonl"))
+    with patch.object(feedback_collector, "read_logs", return_value=[{"correlation_id": "corr-1", "airline": "indigo"}]):
+        resp = client.post("/v1/public/feedback/corr-1", json={"rating": "up", "comment": "Helpful!"})
+    assert resp.status_code == 200
+
+    feedback = feedback_collector.list_recent_feedback("indigo")
+    assert len(feedback) == 1
+    assert feedback[0]["rating"] == "up"
+    assert feedback[0]["comment"] == "Helpful!"
+
+
+def test_public_submit_feedback_requires_no_auth(client, tmp_path, monkeypatch):
+    """Regression: intentionally public, matching /v1/public/query's own
+    trust model — must never require X-API-Key."""
+    import src.feedback.collector as feedback_collector
+
+    monkeypatch.setattr(feedback_collector, "FEEDBACK_FILE", str(tmp_path / "feedback.jsonl"))
+    with patch.object(feedback_collector, "read_logs", return_value=[{"correlation_id": "corr-1", "airline": "indigo"}]):
+        resp = client.post("/v1/public/feedback/corr-1", json={"rating": "down"})
+    assert resp.status_code == 200
+
+
+def test_admin_feedback_requires_valid_key(client):
+    resp = client.get("/v1/admin/feedback", headers={"X-API-Key": "wrong-key"})
+    assert resp.status_code == 401
+
+
+def test_admin_feedback_scoped_to_own_tenant(client, tmp_path, monkeypatch):
+    import src.feedback.collector as feedback_collector
+
+    monkeypatch.setattr(feedback_collector, "FEEDBACK_FILE", str(tmp_path / "feedback.jsonl"))
+    with patch.object(feedback_collector, "read_logs", return_value=[
+        {"correlation_id": "corr-indigo", "airline": "indigo"},
+        {"correlation_id": "corr-sj", "airline": "spicejet"},
+    ]):
+        feedback_collector.record_feedback("corr-indigo", "up")
+        feedback_collector.record_feedback("corr-sj", "down")
+
+    resp = client.get("/v1/admin/feedback", headers={"X-Admin-Key": "indigo-admin-key"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["summary"]["up"] == 1
+    assert body["summary"]["down"] == 0
+    assert len(body["recent"]) == 1
+    assert body["recent"][0]["correlation_id"] == "corr-indigo"
+
+
 @pytest.mark.parametrize("public,refused,error,billed", [
     (False, False, None, True),
     (False, True, None, False),

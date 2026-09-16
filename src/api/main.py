@@ -31,6 +31,13 @@ from src.escalation.queue import (
     list_pending_escalations,
     resolve_escalation,
 )
+from src.feedback.collector import (
+    VALID_RATINGS,
+    UnknownCorrelationIdError,
+    compute_feedback_summary,
+    list_recent_feedback,
+    record_feedback,
+)
 from src.observability.logging_config import get_logger
 from src.security.validator import QueryValidator
 from src.tenancy.registry import TenantConfig, authenticate_by_key, authenticate_admin_by_key
@@ -316,6 +323,46 @@ def public_attach_contact_info(
                    "or has already been resolved.",
         )
     return {"correlation_id": correlation_id, "status": "contact info recorded"}
+
+
+class FeedbackRequest(BaseModel):
+    rating: str = Field(..., description=f"One of {VALID_RATINGS}")
+    comment: str | None = Field(default=None, max_length=1000)
+
+
+@app.post("/v1/public/feedback/{correlation_id}")
+def public_submit_feedback(
+    correlation_id: str, req: FeedbackRequest, request: Request,
+) -> dict:
+    """Let whoever made a query rate the answer thumbs up/down, identified
+    only by the correlation_id their own query response already carried —
+    same trust model as the contact-info endpoint above. The airline this
+    feedback counts toward is looked up server-side from the query log,
+    never taken from the request, so a caller can't attribute feedback to
+    another tenant. Public and unauthenticated by design, matching
+    /v1/public/query; rate-limited the same way. A second submission for
+    the same correlation_id replaces the first."""
+    _check_rate_limit("public:global")
+    _check_rate_limit("public:" + (request.client.host if request.client else "unknown"))
+    if req.rating not in VALID_RATINGS:
+        raise HTTPException(status_code=400, detail=f"rating must be one of {VALID_RATINGS}")
+    try:
+        record_feedback(correlation_id, req.rating, req.comment)
+    except UnknownCorrelationIdError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"correlation_id": correlation_id, "status": "feedback recorded"}
+
+
+@app.get("/v1/admin/feedback")
+def admin_feedback(tenant: TenantConfig = Depends(get_admin_tenant)) -> dict:
+    """Recent feedback and an aggregate summary for the calling tenant
+    only — never another airline's."""
+    return {
+        "summary": compute_feedback_summary(tenant.airline),
+        "recent": list_recent_feedback(tenant.airline),
+    }
 
 
 @app.post("/v1/query", response_model=QueryResponse)
