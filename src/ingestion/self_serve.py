@@ -77,6 +77,9 @@ def _require_owned_doc_id(tenant, doc_id: str) -> None:
         raise OwnershipError(f"'{doc_id}' does not belong to {tenant.airline}.")
 
 
+_ALLOWED_SOURCE_URL_SCHEMES = ("http://", "https://")
+
+
 def validate_upload(title: str, content: str) -> None:
     if not title or not title.strip():
         raise UploadValidationError("Title is required.")
@@ -90,6 +93,17 @@ def validate_upload(title: str, content: str) -> None:
         raise UploadValidationError(
             f"Document too long ({len(content)} chars) — maximum {MAX_CONTENT_CHARS}."
         )
+
+
+def _validate_source_url(source_url: str | None) -> None:
+    """source_url ends up as an <a href> in the reference widget
+    (static/widget.html) and in any other client that renders citations.
+    Reject anything but http(s):// so a tenant can never plant a
+    javascript:/data: URL that executes when a visitor clicks a citation."""
+    if source_url is None:
+        return
+    if not source_url.lower().startswith(_ALLOWED_SOURCE_URL_SCHEMES):
+        raise UploadValidationError("Source URL must start with http:// or https://.")
 
 
 def _build_chunks(
@@ -152,6 +166,7 @@ def ingest_document_for_tenant(
     Returns a small summary dict (doc_id, chunk_count) for UI feedback.
     """
     validate_upload(title, content)
+    _validate_source_url(source_url)
     if supersedes is not None:
         _require_owned_doc_id(tenant, supersedes)
 
@@ -205,6 +220,7 @@ def update_document_for_tenant(
     `doc_id` was not this tenant's own self-serve upload."""
     _require_owned_doc_id(tenant, doc_id)
     validate_upload(title, content)
+    _validate_source_url(source_url)
 
     chunks = _build_chunks(
         doc_id, title, content, category, tenant.airline,

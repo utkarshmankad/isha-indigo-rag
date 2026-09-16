@@ -126,7 +126,14 @@
     for (const s of sources) {
       const li = document.createElement("li");
       const label = s.title + (s.section ? " (§" + s.section + ")" : "");
-      if (s.source_url) {
+      // Defense in depth: the API already rejects non-http(s) source_url
+      // values at upload time (src/ingestion/self_serve.py), but never
+      // trust that solely — a browser will happily execute a
+      // javascript:/data: URL placed in href, so re-check here too before
+      // ever making a source_url clickable.
+      const isSafeUrl = typeof s.source_url === "string"
+        && /^https?:\/\//i.test(s.source_url);
+      if (isSafeUrl) {
         const a = document.createElement("a");
         a.href = s.source_url;
         a.target = "_blank";
