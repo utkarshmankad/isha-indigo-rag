@@ -79,6 +79,21 @@ class QdrantVectorStore:
                     collection_name=collection_name, field_name="source_doc_id",
                     field_schema=PayloadSchemaType.KEYWORD,
                 )
+            # "status" is filtered on every query() call (see
+            # _UNSEARCHABLE_STATUSES below) regardless of create_if_missing,
+            # including against collections that already existed before this
+            # field was introduced — unlike the indexes above, this one must
+            # be ensured unconditionally, or filtering 400s on a strict-mode
+            # Qdrant deployment that requires an index for every filtered
+            # field. create_payload_index is idempotent; Qdrant no-ops (or
+            # error-tolerates) a duplicate call for an existing index.
+            try:
+                self.client.create_payload_index(
+                    collection_name=collection_name, field_name="status",
+                    field_schema=PayloadSchemaType.KEYWORD,
+                )
+            except Exception:
+                logger.warning("could not ensure 'status' payload index", collection=collection_name)
         except Exception:
             self.client.close()
             raise
@@ -199,6 +214,10 @@ class QdrantVectorStore:
         )
         self.client.create_payload_index(
             collection_name=self.collection_name, field_name="source_doc_id",
+            field_schema=PayloadSchemaType.KEYWORD,
+        )
+        self.client.create_payload_index(
+            collection_name=self.collection_name, field_name="status",
             field_schema=PayloadSchemaType.KEYWORD,
         )
         print(
