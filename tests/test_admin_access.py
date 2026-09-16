@@ -68,6 +68,13 @@ def test_widget_sends_history_and_renders_clickable_citations():
     assert 'target = "_blank"' in widget or "target = '_blank'" in widget
 
 
+def test_widget_offers_contact_capture_on_refusal():
+    widget=(Path(__file__).resolve().parents[1]/'static/widget.html').read_text()
+    assert '/v1/public/escalations/' in widget
+    assert 'data.refused' in widget
+    assert 'renderContactForm' in widget
+
+
 def test_widget_never_sets_href_without_scheme_check():
     """Regression: source_url is tenant-controlled and rendered as <a href>
     — the widget must re-validate the scheme itself (defense in depth),

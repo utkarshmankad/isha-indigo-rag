@@ -24,7 +24,13 @@ from pydantic import BaseModel, Field
 
 from src.agent.graph import run_agent, run_agent_for_tenant
 from src.billing.stripe_usage import record_query_usage
-from src.escalation.queue import list_pending_escalations, resolve_escalation
+from src.escalation.queue import (
+    VALID_CONTACT_CHANNELS,
+    attach_contact_info,
+    claim_escalation,
+    list_pending_escalations,
+    resolve_escalation,
+)
 from src.observability.logging_config import get_logger
 from src.security.validator import QueryValidator
 from src.tenancy.registry import TenantConfig, authenticate_by_key, authenticate_admin_by_key
@@ -210,6 +216,11 @@ class EscalationOut(BaseModel):
     query: str
     confidence: float
     status: str
+    contact_channel: str | None = None
+    contact_value: str | None = None
+    owner: str | None = None
+    response: str | None = None
+    responded_at: str | None = None
 
 
 @app.get("/v1/admin/escalations", response_model=list[EscalationOut])
@@ -225,19 +236,86 @@ def admin_escalations(tenant: TenantConfig = Depends(get_admin_tenant)) -> list[
             query=e["query"],
             confidence=e["confidence"],
             status=e["status"],
+            contact_channel=e.get("contact_channel"),
+            contact_value=e.get("contact_value"),
+            owner=e.get("owner"),
+            response=e.get("response"),
+            responded_at=e.get("responded_at"),
         )
         for e in entries
     ]
 
 
+class ClaimEscalationRequest(BaseModel):
+    owner: str = Field(..., min_length=1, max_length=100)
+
+
+@app.post("/v1/admin/escalations/{escalation_id}/claim")
+def admin_claim_escalation(
+    escalation_id: str, req: ClaimEscalationRequest, tenant: TenantConfig = Depends(get_admin_tenant),
+) -> dict:
+    """Mark this escalation as one a named agent is working — a "who's on
+    it" marker so two agents don't duplicate the same follow-up, not a
+    lock. `owner` is a free-text agent name/id; admin auth here is
+    airline-level, not per-staff, so there is no verified identity to use
+    instead."""
+    claimed = claim_escalation(escalation_id, tenant.airline, req.owner)
+    if not claimed:
+        raise HTTPException(status_code=404, detail="Escalation not found for this tenant.")
+    return {"escalation_id": escalation_id, "owner": req.owner}
+
+
+class ResolveEscalationRequest(BaseModel):
+    response: str | None = Field(default=None, max_length=4000)
+
+
 @app.post("/v1/admin/escalations/{escalation_id}/resolve")
 def admin_resolve_escalation(
-    escalation_id: str, tenant: TenantConfig = Depends(get_admin_tenant),
+    escalation_id: str, req: ResolveEscalationRequest = ResolveEscalationRequest(),
+    tenant: TenantConfig = Depends(get_admin_tenant),
 ) -> dict:
-    resolved = resolve_escalation(escalation_id, tenant.airline)
+    """Resolve an escalation, optionally recording the human agent's
+    written response. Recording a response here does not send it to the
+    passenger — there is no outbound email/SMS integration in this
+    environment (see src/escalation/queue.py); an airline's own follow-up
+    process must actually reach out using the contact info attached via
+    the public contact-info endpoint below."""
+    resolved = resolve_escalation(escalation_id, tenant.airline, response=req.response)
     if not resolved:
         raise HTTPException(status_code=404, detail="Escalation not found for this tenant.")
     return {"escalation_id": escalation_id, "status": "resolved"}
+
+
+class ContactInfoRequest(BaseModel):
+    channel: str = Field(..., description=f"One of {VALID_CONTACT_CHANNELS}")
+    value: str = Field(..., min_length=1, max_length=200)
+
+
+@app.post("/v1/public/escalations/{correlation_id}/contact")
+def public_attach_contact_info(
+    correlation_id: str, req: ContactInfoRequest, request: Request,
+) -> dict:
+    """Let a passenger whose query was refused/escalated leave contact info
+    for human follow-up, identified only by the correlation_id their own
+    query response already carried — the same random, server-generated,
+    per-request id, never an escalation_id they were never given. Public
+    and unauthenticated by design, matching /v1/public/query; rate-limited
+    the same way."""
+    _check_rate_limit("public:global")
+    _check_rate_limit("public:" + (request.client.host if request.client else "unknown"))
+    if req.channel not in VALID_CONTACT_CHANNELS:
+        raise HTTPException(status_code=400, detail=f"channel must be one of {VALID_CONTACT_CHANNELS}")
+    try:
+        attached = attach_contact_info(correlation_id, req.channel, req.value)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not attached:
+        raise HTTPException(
+            status_code=404,
+            detail="No pending escalation found for this correlation_id — it may not have been refused, "
+                   "or has already been resolved.",
+        )
+    return {"correlation_id": correlation_id, "status": "contact info recorded"}
 
 
 @app.post("/v1/query", response_model=QueryResponse)
