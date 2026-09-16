@@ -1,4 +1,4 @@
-# Canonical record + dense/lexical index consistency (S9-T1, Weeks 3-4 item 1)
+# Canonical record + dense/lexical index consistency (S9-T1, Weeks 3-4 items 1 and 3)
 
 Self-serve document add/update/delete (`src/ingestion/self_serve.py`) now goes
 through `IndexManager` (`src/ingestion/index_manager.py`) instead of writing
@@ -50,10 +50,30 @@ them or none:
   inconsistent with each other; there is no reconciliation job to detect and
   repair that today.
 
+## Approval status gates retrieval
+
+`IndexManager.set_status(doc_id, status)` is a fourth, simpler operation:
+a metadata-only transition (used for approve/reject/supersede), not a
+content change. It patches the `status` field on the canonical record, on
+every dense chunk (via `QdrantVectorStore.set_status_by_doc_id`, an
+in-place payload patch — no vectors touched), and on the matching in-memory
+BM25 chunks, all independently and idempotently (safe to retry; no
+compensating rollback needed since each patch alone is harmless).
+
+Both `hybrid_search`'s BM25 path and `QdrantVectorStore.query`'s dense path
+then exclude any chunk whose `status` is `pending`, `rejected`, or
+`superseded`. Bundled corpus chunks have no `status` field at all and are
+therefore always searchable — the exclusion only ever applies to self-serve
+chunks that haven't cleared approval yet. See
+`docs/CANONICAL-DOCUMENT-STORE.md` for the full approval/dedup/supersession
+workflow.
+
 ## Ownership checks
 
-`update_document_for_tenant` and `delete_document_for_tenant` both require
+`update_document_for_tenant`, `delete_document_for_tenant`,
+`approve_document_for_tenant`, and `reject_document_for_tenant` all require
 the target `doc_id` to start with `SELFSERVE-{AIRLINE}-` for the calling
 tenant's own airline (`OwnershipError` otherwise) — a tenant can only
-modify/remove their own self-serve uploads, never another tenant's uploads
-or a bundled policy document.
+modify/remove/approve/reject their own self-serve uploads, never another
+tenant's uploads or a bundled policy document. The same check applies to
+`supersedes` when creating a new document.
