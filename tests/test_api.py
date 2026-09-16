@@ -229,6 +229,111 @@ def test_staff_cannot_manage_escalations(client, header):
     assert client.post("/v1/admin/escalations/example/resolve", headers=headers).status_code == 401
 
 
+def test_admin_claim_escalation_sets_owner(client, tmp_path, monkeypatch):
+    import src.escalation.queue as escalation_queue
+
+    monkeypatch.setattr(escalation_queue, "ESCALATION_FILE", str(tmp_path / "escalations.jsonl"))
+    escalation_id = escalation_queue.enqueue_escalation("q1", "indigo", 0.1, "corr-1")
+
+    resp = client.post(
+        f"/v1/admin/escalations/{escalation_id}/claim",
+        json={"owner": "agent-priya"}, headers={"X-Admin-Key": "indigo-admin-key"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["owner"] == "agent-priya"
+
+    follow_up = client.get("/v1/admin/escalations", headers={"X-Admin-Key": "indigo-admin-key"})
+    assert follow_up.json()[0]["owner"] == "agent-priya"
+
+
+def test_admin_claim_escalation_cross_tenant_rejected(client, tmp_path, monkeypatch):
+    import src.escalation.queue as escalation_queue
+
+    monkeypatch.setattr(escalation_queue, "ESCALATION_FILE", str(tmp_path / "escalations.jsonl"))
+    escalation_id = escalation_queue.enqueue_escalation("q1", "indigo", 0.1, "corr-1")
+
+    resp = client.post(
+        f"/v1/admin/escalations/{escalation_id}/claim",
+        json={"owner": "agent-x"}, headers={"X-Admin-Key": "sj-admin-key"},
+    )
+    assert resp.status_code == 404
+
+
+def test_admin_resolve_escalation_records_response(client, tmp_path, monkeypatch):
+    import src.escalation.queue as escalation_queue
+
+    monkeypatch.setattr(escalation_queue, "ESCALATION_FILE", str(tmp_path / "escalations.jsonl"))
+    escalation_id = escalation_queue.enqueue_escalation("q1", "indigo", 0.1, "corr-1")
+
+    resp = client.post(
+        f"/v1/admin/escalations/{escalation_id}/resolve",
+        json={"response": "Called passenger back."}, headers={"X-Admin-Key": "indigo-admin-key"},
+    )
+    assert resp.status_code == 200
+
+    entries = escalation_queue._read_all()
+    entry = next(e for e in entries if e["escalation_id"] == escalation_id)
+    assert entry["response"] == "Called passenger back."
+    assert entry["responded_at"] is not None
+
+
+def test_public_attach_contact_info_updates_pending_escalation(client, tmp_path, monkeypatch):
+    import src.escalation.queue as escalation_queue
+
+    monkeypatch.setattr(escalation_queue, "ESCALATION_FILE", str(tmp_path / "escalations.jsonl"))
+    escalation_queue.enqueue_escalation("q1", "indigo", 0.1, "corr-1")
+
+    resp = client.post(
+        "/v1/public/escalations/corr-1/contact",
+        json={"channel": "email", "value": "passenger@example.com"},
+    )
+    assert resp.status_code == 200
+
+    entries = escalation_queue._read_all()
+    assert entries[0]["contact_channel"] == "email"
+    assert entries[0]["contact_value"] == "passenger@example.com"
+
+
+def test_public_attach_contact_info_rejects_bad_channel(client, tmp_path, monkeypatch):
+    import src.escalation.queue as escalation_queue
+
+    monkeypatch.setattr(escalation_queue, "ESCALATION_FILE", str(tmp_path / "escalations.jsonl"))
+    escalation_queue.enqueue_escalation("q1", "indigo", 0.1, "corr-1")
+
+    resp = client.post(
+        "/v1/public/escalations/corr-1/contact",
+        json={"channel": "carrier-pigeon", "value": "x@example.com"},
+    )
+    assert resp.status_code == 400
+
+
+def test_public_attach_contact_info_unknown_correlation_id_404s(client, tmp_path, monkeypatch):
+    import src.escalation.queue as escalation_queue
+
+    monkeypatch.setattr(escalation_queue, "ESCALATION_FILE", str(tmp_path / "escalations.jsonl"))
+
+    resp = client.post(
+        "/v1/public/escalations/nonexistent-corr/contact",
+        json={"channel": "email", "value": "x@example.com"},
+    )
+    assert resp.status_code == 404
+
+
+def test_public_attach_contact_info_requires_no_auth(client, tmp_path, monkeypatch):
+    """Regression: this endpoint is intentionally public, matching
+    /v1/public/query's own trust model — must never require X-API-Key."""
+    import src.escalation.queue as escalation_queue
+
+    monkeypatch.setattr(escalation_queue, "ESCALATION_FILE", str(tmp_path / "escalations.jsonl"))
+    escalation_queue.enqueue_escalation("q1", "indigo", 0.1, "corr-1")
+
+    resp = client.post(
+        "/v1/public/escalations/corr-1/contact",
+        json={"channel": "phone", "value": "+91-9999999999"},
+    )
+    assert resp.status_code == 200
+
+
 @pytest.mark.parametrize("public,refused,error,billed", [
     (False, False, None, True),
     (False, True, None, False),

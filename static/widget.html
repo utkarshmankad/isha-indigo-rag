@@ -57,6 +57,15 @@
   #isha-input-row { display: flex; border-top: 1px solid #eee; }
   #isha-input { flex: 1; border: none; padding: 10px; font-size: 14px; }
   #isha-send { border: none; background: #003580; color: #fff; padding: 0 16px; cursor: pointer; }
+  .isha-contact-form { margin-top: 6px; font-size: 12px; }
+  .isha-contact-form input {
+    width: 60%; padding: 4px; font-size: 12px; border: 1px solid #ccc; border-radius: 4px;
+  }
+  .isha-contact-form button {
+    border: none; background: #003580; color: #fff; padding: 4px 8px;
+    border-radius: 4px; cursor: pointer; font-size: 12px; margin-left: 4px;
+  }
+  .isha-contact-status { color: #1a7a1a; margin-top: 4px; }
 </style>
 </head>
 <body>
@@ -148,6 +157,44 @@
     container.appendChild(list);
   }
 
+  function renderContactForm(container, correlationId) {
+    const form = document.createElement("div");
+    form.className = "isha-contact-form";
+    form.innerHTML =
+      '<div>Want a human to follow up? Leave your email:</div>' +
+      '<input type="email" placeholder="you@example.com">' +
+      '<button type="button">Send</button>';
+    const emailInput = form.querySelector("input");
+    const submitBtn = form.querySelector("button");
+    submitBtn.addEventListener("click", async () => {
+      const value = emailInput.value.trim();
+      if (!value) return;
+      submitBtn.disabled = true;
+      try {
+        const res = await fetch(
+          API_BASE + "/v1/public/escalations/" + encodeURIComponent(correlationId) + "/contact",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ channel: "email", value: value }),
+          },
+        );
+        if (res.ok) {
+          form.innerHTML = '<div class="isha-contact-status">Thanks — someone will follow up.</div>';
+        } else {
+          submitBtn.disabled = false;
+          const data = await res.json().catch(() => ({}));
+          form.querySelector("div").textContent = "Could not save contact info: "
+            + (data.detail || res.statusText);
+        }
+      } catch (err) {
+        submitBtn.disabled = false;
+        form.querySelector("div").textContent = "Network error — could not reach ISHA.";
+      }
+    });
+    container.appendChild(form);
+  }
+
   function replayHistory() {
     messages.textContent = "";
     for (const turn of history) {
@@ -195,6 +242,9 @@
       if (res.ok) {
         placeholder.textContent = data.answer;
         renderSources(placeholder, data.sources);
+        if (data.refused && data.correlation_id) {
+          renderContactForm(placeholder, data.correlation_id);
+        }
         pushTurn("assistant", data.answer);
       } else {
         placeholder.textContent = "Error: " + (data.detail || res.statusText);

@@ -186,21 +186,55 @@ with st.sidebar:
                 )
 
             with st.expander("🚨 Escalation queue"):
-                from src.escalation.queue import list_pending_escalations, resolve_escalation
+                from src.escalation.queue import (
+                    claim_escalation,
+                    list_pending_escalations,
+                    resolve_escalation,
+                )
 
                 pending = list_pending_escalations(admin_tenant.airline)
                 if not pending:
                     st.caption("No pending escalations.")
                 for e in pending:
+                    contact = (
+                        f"{e['contact_channel']}: {e['contact_value']}"
+                        if e.get("contact_channel") else "no contact info left"
+                    )
+                    owner = e.get("owner") or "unclaimed"
                     st.markdown(
                         f"**{e['query']}**  \n"
-                        f"retrieval similarity: `{e['confidence']:.2f}` · {e['timestamp']}"
+                        f"retrieval similarity: `{e['confidence']:.2f}` · {e['timestamp']}  \n"
+                        f"contact: {contact} · owner: {owner}"
+                    )
+                    claim_cols = st.columns(2)
+                    with claim_cols[0]:
+                        agent_name = st.text_input(
+                            "Claim as", key=f"claim_name_{e['escalation_id']}",
+                            label_visibility="collapsed", placeholder="Your name",
+                        )
+                        if st.button("Claim", key=f"claim_{e['escalation_id']}"):
+                            if agent_name.strip():
+                                claim_escalation(e["escalation_id"], admin_tenant.airline, agent_name.strip())
+                                st.rerun()
+                            else:
+                                st.error("Enter a name to claim.")
+                    response_text = st.text_area(
+                        "Response (not sent automatically — see caption below)",
+                        key=f"response_{e['escalation_id']}", height=68,
                     )
                     if st.button("Mark resolved", key=f"resolve_{e['escalation_id']}"):
-                        if resolve_escalation(e["escalation_id"], admin_tenant.airline):
+                        if resolve_escalation(
+                            e["escalation_id"], admin_tenant.airline,
+                            response=response_text.strip() or None,
+                        ):
                             st.rerun()
                         else:
                             st.error("Could not resolve this escalation. Try again.")
+                    st.caption(
+                        "Recording a response here does not email/text the passenger — "
+                        "no outbound integration exists yet. Use the contact info above to "
+                        "follow up through your own channel."
+                    )
                     st.divider()
 
             with st.expander("📤 Upload a policy document"):
