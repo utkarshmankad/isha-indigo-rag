@@ -185,6 +185,27 @@ with st.sidebar:
                     "no token-usage tracking wired up yet."
                 )
 
+            with st.expander("👍 User feedback"):
+                from src.feedback.collector import compute_feedback_summary, list_recent_feedback
+
+                summary = compute_feedback_summary(admin_tenant.airline)
+                fb_cols = st.columns(3)
+                fb_cols[0].metric("👍 Helpful", summary["up"])
+                fb_cols[1].metric("👎 Not helpful", summary["down"])
+                fb_cols[2].metric(
+                    "Satisfaction",
+                    f"{summary['satisfaction_rate']:.1%}" if summary["satisfaction_rate"] is not None else "n/a",
+                )
+                recent = list_recent_feedback(admin_tenant.airline)
+                if not recent:
+                    st.caption("No feedback yet.")
+                for f in reversed(recent[-10:]):
+                    icon = "👍" if f["rating"] == "up" else "👎"
+                    line = f"{icon} `{f['correlation_id'][:8]}…` · {f['timestamp']}"
+                    if f.get("comment"):
+                        line += f"  \n> {f['comment']}"
+                    st.markdown(line)
+
             with st.expander("🚨 Escalation queue"):
                 from src.escalation.queue import (
                     claim_escalation,

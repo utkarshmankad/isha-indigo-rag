@@ -20,6 +20,10 @@
   A source without one falls back to title + section (a chunk position,
   not an official policy section number — see the API's own field
   description).
+
+  Feedback: every answer gets a 👍/👎, posted to /v1/public/feedback/
+  {correlation_id} — same public/unauthenticated/rate-limited trust model
+  as the contact-info endpoint above (see src/feedback/collector.py).
 -->
 <!doctype html>
 <html lang="en">
@@ -66,6 +70,13 @@
     border-radius: 4px; cursor: pointer; font-size: 12px; margin-left: 4px;
   }
   .isha-contact-status { color: #1a7a1a; margin-top: 4px; }
+  .isha-feedback { margin-top: 6px; }
+  .isha-feedback button {
+    border: none; background: none; cursor: pointer; font-size: 14px;
+    padding: 2px 4px; opacity: 0.6;
+  }
+  .isha-feedback button:hover, .isha-feedback button.selected { opacity: 1; }
+  .isha-feedback-status { font-size: 11px; color: #888; margin-left: 4px; }
 </style>
 </head>
 <body>
@@ -195,6 +206,52 @@
     container.appendChild(form);
   }
 
+  function renderFeedbackButtons(container, correlationId) {
+    const wrap = document.createElement("div");
+    wrap.className = "isha-feedback";
+    const up = document.createElement("button");
+    up.type = "button";
+    up.textContent = "👍";
+    up.setAttribute("aria-label", "Helpful");
+    const down = document.createElement("button");
+    down.type = "button";
+    down.textContent = "👎";
+    down.setAttribute("aria-label", "Not helpful");
+    const status = document.createElement("span");
+    status.className = "isha-feedback-status";
+
+    async function submit(rating, button) {
+      up.disabled = true;
+      down.disabled = true;
+      button.classList.add("selected");
+      try {
+        const res = await fetch(
+          API_BASE + "/v1/public/feedback/" + encodeURIComponent(correlationId),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ rating: rating }),
+          },
+        );
+        status.textContent = res.ok ? "Thanks for the feedback!" : "Could not save feedback.";
+      } catch (err) {
+        status.textContent = "Network error — could not reach ISHA.";
+      }
+      if (!status.textContent.startsWith("Thanks")) {
+        up.disabled = false;
+        down.disabled = false;
+        button.classList.remove("selected");
+      }
+    }
+
+    up.addEventListener("click", () => submit("up", up));
+    down.addEventListener("click", () => submit("down", down));
+    wrap.appendChild(up);
+    wrap.appendChild(down);
+    wrap.appendChild(status);
+    container.appendChild(wrap);
+  }
+
   function replayHistory() {
     messages.textContent = "";
     for (const turn of history) {
@@ -242,6 +299,9 @@
       if (res.ok) {
         placeholder.textContent = data.answer;
         renderSources(placeholder, data.sources);
+        if (data.correlation_id) {
+          renderFeedbackButtons(placeholder, data.correlation_id);
+        }
         if (data.refused && data.correlation_id) {
           renderContactForm(placeholder, data.correlation_id);
         }

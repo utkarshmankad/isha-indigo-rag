@@ -75,6 +75,16 @@ def test_widget_offers_contact_capture_on_refusal():
     assert 'renderContactForm' in widget
 
 
+def test_widget_offers_feedback_buttons_on_every_answer():
+    widget=(Path(__file__).resolve().parents[1]/'static/widget.html').read_text()
+    assert '/v1/public/feedback/' in widget
+    assert 'renderFeedbackButtons' in widget
+    # feedback call, unlike the contact form, must not be gated on
+    # data.refused — every answer gets a rating opportunity.
+    feedback_call_line = next(l for l in widget.splitlines() if 'renderFeedbackButtons(placeholder' in l)
+    assert 'data.refused' not in feedback_call_line
+
+
 def test_widget_never_sets_href_without_scheme_check():
     """Regression: source_url is tenant-controlled and rendered as <a href>
     — the widget must re-validate the scheme itself (defense in depth),
