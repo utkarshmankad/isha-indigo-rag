@@ -248,6 +248,81 @@ def test_get_version_history_returns_versions_for_owned_doc():
     doc_store.list_versions.assert_called_once_with(doc_id)
 
 
+@patch("src.ingestion.self_serve.embed_chunks")
+def test_ingest_document_carries_source_url_onto_chunk_metadata(mock_embed):
+    """Regression: source_url was previously only recorded on the canonical
+    DocumentStore record, never on the searchable chunks — so a citation
+    could never show it."""
+    mock_embed.side_effect = lambda chunks: [{**c, "embedding": [0.0] * 8} for c in chunks]
+    manager = MagicMock()
+
+    ingest_document_for_tenant(
+        TENANT, "Test Policy", "x" * 100, "baggage", manager,
+        source_url="https://example.com/policy", effective_date="2026-01-01",
+    )
+
+    (_, added_chunks), _ = manager.add_document.call_args
+    assert all(c["metadata"]["source_url"] == "https://example.com/policy" for c in added_chunks)
+    assert all(c["metadata"]["effective_date"] == "2026-01-01" for c in added_chunks)
+
+
+@patch("src.ingestion.self_serve.embed_chunks")
+def test_update_document_carries_source_url_onto_chunk_metadata(mock_embed):
+    mock_embed.side_effect = lambda chunks: [{**c, "embedding": [0.0] * 8} for c in chunks]
+    manager = MagicMock()
+    doc_id = "SELFSERVE-INDIGO-old-title-123"
+
+    update_document_for_tenant(
+        TENANT, doc_id, "New Title", "y" * 100, "baggage", manager,
+        source_url="https://example.com/updated-policy",
+    )
+
+    (_, _, chunks), _ = manager.update_document.call_args
+    assert all(c["metadata"]["source_url"] == "https://example.com/updated-policy" for c in chunks)
+
+
+@patch("src.ingestion.self_serve.embed_chunks")
+def test_ingest_document_rejects_javascript_url_scheme(mock_embed):
+    """Regression: source_url is rendered as <a href> by the reference
+    widget (static/widget.html) — a javascript:/data: URL here would be an
+    XSS vector for whoever clicks the citation."""
+    mock_embed.side_effect = lambda chunks: [{**c, "embedding": [0.0] * 8} for c in chunks]
+    manager = MagicMock()
+
+    with pytest.raises(UploadValidationError):
+        ingest_document_for_tenant(
+            TENANT, "Test Policy", "x" * 100, "baggage", manager,
+            source_url="javascript:alert(document.cookie)",
+        )
+    manager.add_document.assert_not_called()
+
+
+@patch("src.ingestion.self_serve.embed_chunks")
+def test_ingest_document_accepts_https_url(mock_embed):
+    mock_embed.side_effect = lambda chunks: [{**c, "embedding": [0.0] * 8} for c in chunks]
+    manager = MagicMock()
+
+    ingest_document_for_tenant(
+        TENANT, "Test Policy", "x" * 100, "baggage", manager,
+        source_url="https://example.com/policy",
+    )
+    manager.add_document.assert_called_once()
+
+
+@patch("src.ingestion.self_serve.embed_chunks")
+def test_update_document_rejects_data_url_scheme(mock_embed):
+    mock_embed.side_effect = lambda chunks: [{**c, "embedding": [0.0] * 8} for c in chunks]
+    manager = MagicMock()
+    doc_id = "SELFSERVE-INDIGO-old-title-123"
+
+    with pytest.raises(UploadValidationError):
+        update_document_for_tenant(
+            TENANT, doc_id, "New Title", "y" * 100, "baggage", manager,
+            source_url="data:text/html,<script>alert(1)</script>",
+        )
+    manager.update_document.assert_not_called()
+
+
 def test_delete_document_requires_ownership():
     manager = MagicMock()
     with pytest.raises(OwnershipError):

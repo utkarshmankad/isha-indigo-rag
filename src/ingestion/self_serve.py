@@ -77,6 +77,9 @@ def _require_owned_doc_id(tenant, doc_id: str) -> None:
         raise OwnershipError(f"'{doc_id}' does not belong to {tenant.airline}.")
 
 
+_ALLOWED_SOURCE_URL_SCHEMES = ("http://", "https://")
+
+
 def validate_upload(title: str, content: str) -> None:
     if not title or not title.strip():
         raise UploadValidationError("Title is required.")
@@ -92,7 +95,22 @@ def validate_upload(title: str, content: str) -> None:
         )
 
 
-def _build_chunks(doc_id: str, title: str, content: str, category: str, airline: str) -> list[dict]:
+def _validate_source_url(source_url: str | None) -> None:
+    """source_url ends up as an <a href> in the reference widget
+    (static/widget.html) and in any other client that renders citations.
+    Reject anything but http(s):// so a tenant can never plant a
+    javascript:/data: URL that executes when a visitor clicks a citation."""
+    if source_url is None:
+        return
+    if not source_url.lower().startswith(_ALLOWED_SOURCE_URL_SCHEMES):
+        raise UploadValidationError("Source URL must start with http:// or https://.")
+
+
+def _build_chunks(
+    doc_id: str, title: str, content: str, category: str, airline: str,
+    *, source_url: str | None = None, effective_date: str | None = None,
+    verified_date: str | None = None,
+) -> list[dict]:
     doc = {
         "id": doc_id,
         "title": title.strip(),
@@ -106,6 +124,13 @@ def _build_chunks(doc_id: str, title: str, content: str, category: str, airline:
         # New uploads and content updates always require approval — see
         # module docstring and docs/INDEX-CONSISTENCY.md.
         "status": "pending",
+        # Carried through to chunk metadata so citations can surface them —
+        # see SourceOut.source_url in src/api/main.py. Previously these were
+        # only recorded on the canonical DocumentStore record, never on the
+        # searchable chunks themselves.
+        "source_url": source_url,
+        "effective_date": effective_date,
+        "verified_date": verified_date,
     }
     chunks = chunk_document(doc)
     if not chunks:
@@ -141,6 +166,7 @@ def ingest_document_for_tenant(
     Returns a small summary dict (doc_id, chunk_count) for UI feedback.
     """
     validate_upload(title, content)
+    _validate_source_url(source_url)
     if supersedes is not None:
         _require_owned_doc_id(tenant, supersedes)
 
@@ -151,7 +177,10 @@ def ingest_document_for_tenant(
             raise DuplicateDocumentError(duplicate["doc_id"])
 
     doc_id = f"{_tenant_doc_prefix(tenant)}{_slugify(title)}-{int(datetime.now(timezone.utc).timestamp())}"
-    chunks = _build_chunks(doc_id, title, content, category, tenant.airline)
+    chunks = _build_chunks(
+        doc_id, title, content, category, tenant.airline,
+        source_url=source_url, effective_date=effective_date, verified_date=verified_date,
+    )
     embedded = embed_chunks(chunks)
     record = build_record(
         doc_id=doc_id, title=title.strip(), category=category, airline=tenant.airline,
@@ -191,8 +220,12 @@ def update_document_for_tenant(
     `doc_id` was not this tenant's own self-serve upload."""
     _require_owned_doc_id(tenant, doc_id)
     validate_upload(title, content)
+    _validate_source_url(source_url)
 
-    chunks = _build_chunks(doc_id, title, content, category, tenant.airline)
+    chunks = _build_chunks(
+        doc_id, title, content, category, tenant.airline,
+        source_url=source_url, effective_date=effective_date, verified_date=verified_date,
+    )
     embedded = embed_chunks(chunks)
     previous = document_store.get(doc_id) if document_store else None
     record = build_record(

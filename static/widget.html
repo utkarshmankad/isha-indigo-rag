@@ -1,11 +1,25 @@
 <!--
-  ISHA embeddable chat widget (S6-T2).
+  ISHA embeddable chat widget (S6-T2, extended Weeks 5-8 item 2).
 
   Drop this file's <script> block onto any airline's website (adjusting
   API_BASE below) to get a floating chat bubble that talks to
   the FastAPI wrapper (src/api/main.py). Self-contained, no build step,
   no external dependencies — deliberately simple since it's a reference
   implementation for airlines to adapt, not a shipped product widget.
+
+  Conversation history: kept in sessionStorage (cleared when the tab
+  closes, unlike localStorage) and sent as `history` on every request so
+  follow-up questions ("what about international flights?") keep context.
+  Only this browser tab's own history is ever read or sent — nothing here
+  reaches ISHA's servers except via the existing /v1/public/query call.
+
+  Citations: each answer's `sources` are rendered under it. A source with
+  a `source_url` is a clickable link; ISHA does not verify that a tenant-
+  supplied source_url is actually correct, so these are exactly as
+  trustworthy as whoever entered them (see docs/CANONICAL-DOCUMENT-STORE.md).
+  A source without one falls back to title + section (a chunk position,
+  not an official policy section number — see the API's own field
+  description).
 -->
 <!doctype html>
 <html lang="en">
@@ -24,11 +38,22 @@
     display: none; flex-direction: column; overflow: hidden; font-family: sans-serif;
   }
   #isha-panel.open { display: flex; }
-  #isha-header { background: #003580; color: #fff; padding: 12px 16px; font-weight: bold; }
+  #isha-header {
+    background: #003580; color: #fff; padding: 12px 16px; font-weight: bold;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  #isha-clear {
+    background: none; border: none; color: #cdddf5; font-size: 12px;
+    cursor: pointer; text-decoration: underline; padding: 0;
+  }
   #isha-messages { flex: 1; overflow-y: auto; padding: 12px; font-size: 14px; }
   #isha-messages .msg { margin-bottom: 10px; }
   #isha-messages .user { text-align: right; color: #003580; }
   #isha-messages .assistant { color: #222; }
+  #isha-sources { margin-top: 4px; font-size: 12px; color: #555; }
+  #isha-messages .sources-list { list-style: none; padding: 0; margin: 4px 0 0; }
+  #isha-messages .sources-list li { margin-bottom: 2px; }
+  #isha-messages .sources-list a { color: #003580; }
   #isha-input-row { display: flex; border-top: 1px solid #eee; }
   #isha-input { flex: 1; border: none; padding: 10px; font-size: 14px; }
   #isha-send { border: none; background: #003580; color: #fff; padding: 0 16px; cursor: pointer; }
@@ -38,7 +63,10 @@
 
 <button id="isha-bubble" aria-label="Open ISHA chat">✈️</button>
 <div id="isha-panel">
-  <div id="isha-header">ISHA — Ask about your booking</div>
+  <div id="isha-header">
+    <span>ISHA — Ask about your booking</span>
+    <button id="isha-clear" aria-label="Clear conversation">Clear</button>
+  </div>
   <div id="isha-messages"></div>
   <div id="isha-input-row">
     <input id="isha-input" type="text" placeholder="Ask a question…">
@@ -50,14 +78,37 @@
 (function () {
   // Public endpoint uses only published policies. Never embed staff/admin keys.
   const API_BASE = "http://localhost:8080";
+  const HISTORY_KEY = "isha_widget_history";
+  const MAX_HISTORY_TURNS = 10; // must match QueryRequest.history max_length in src/api/main.py
+  const MAX_TURN_CHARS = 2000;  // must match HistoryTurn.content max_length in src/api/main.py
 
   const bubble = document.getElementById("isha-bubble");
   const panel = document.getElementById("isha-panel");
   const messages = document.getElementById("isha-messages");
   const input = document.getElementById("isha-input");
   const send = document.getElementById("isha-send");
+  const clearBtn = document.getElementById("isha-clear");
 
-  bubble.addEventListener("click", () => panel.classList.toggle("open"));
+  function loadHistory() {
+    try {
+      const raw = sessionStorage.getItem(HISTORY_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch (err) {
+      return [];
+    }
+  }
+
+  function saveHistory(history) {
+    try {
+      sessionStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+    } catch (err) {
+      // Storage disabled/full — the widget still works, just without
+      // cross-message-render persistence; history stays correct in memory
+      // for the rest of this page view.
+    }
+  }
+
+  let history = loadHistory();
 
   function addMessage(role, text) {
     const div = document.createElement("div");
@@ -65,26 +116,89 @@
     div.textContent = text;
     messages.appendChild(div);
     messages.scrollTop = messages.scrollHeight;
+    return div;
   }
+
+  function renderSources(container, sources) {
+    if (!sources || !sources.length) return;
+    const list = document.createElement("ul");
+    list.className = "sources-list";
+    for (const s of sources) {
+      const li = document.createElement("li");
+      const label = s.title + (s.section ? " (§" + s.section + ")" : "");
+      // Defense in depth: the API already rejects non-http(s) source_url
+      // values at upload time (src/ingestion/self_serve.py), but never
+      // trust that solely — a browser will happily execute a
+      // javascript:/data: URL placed in href, so re-check here too before
+      // ever making a source_url clickable.
+      const isSafeUrl = typeof s.source_url === "string"
+        && /^https?:\/\//i.test(s.source_url);
+      if (isSafeUrl) {
+        const a = document.createElement("a");
+        a.href = s.source_url;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.textContent = label;
+        li.appendChild(a);
+      } else {
+        li.textContent = label;
+      }
+      list.appendChild(li);
+    }
+    container.appendChild(list);
+  }
+
+  function replayHistory() {
+    messages.textContent = "";
+    for (const turn of history) {
+      addMessage(turn.role, turn.content);
+    }
+  }
+
+  function pushTurn(role, content) {
+    history.push({ role, content: content.slice(0, MAX_TURN_CHARS) });
+    if (history.length > MAX_HISTORY_TURNS) {
+      history = history.slice(history.length - MAX_HISTORY_TURNS);
+    }
+    saveHistory(history);
+  }
+
+  replayHistory();
+
+  bubble.addEventListener("click", () => panel.classList.toggle("open"));
+
+  clearBtn.addEventListener("click", () => {
+    history = [];
+    saveHistory(history);
+    messages.textContent = "";
+  });
 
   async function sendQuery() {
     const text = input.value.trim();
     if (!text) return;
     input.value = "";
     addMessage("user", text);
-    addMessage("assistant", "…");
-    const placeholder = messages.lastChild;
+    const placeholder = addMessage("assistant", "…");
+
+    // Sent before the reply lands, so a follow-up context window always
+    // includes this turn even if the request below fails.
+    const historyForRequest = history.slice();
+    pushTurn("user", text);
 
     try {
       const res = await fetch(API_BASE + "/v1/public/query", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: text }),
+        body: JSON.stringify({ query: text, history: historyForRequest }),
       });
       const data = await res.json();
-      placeholder.textContent = res.ok
-        ? data.answer
-        : "Error: " + (data.detail || res.statusText);
+      if (res.ok) {
+        placeholder.textContent = data.answer;
+        renderSources(placeholder, data.sources);
+        pushTurn("assistant", data.answer);
+      } else {
+        placeholder.textContent = "Error: " + (data.detail || res.statusText);
+      }
     } catch (err) {
       placeholder.textContent = "Network error — could not reach ISHA.";
     }

@@ -96,6 +96,39 @@ def test_query_response_sources_include_traceable_citation(client):
     assert source["section"] == 3  # chunk_index is 0-based, section is human-facing 1-based
 
 
+def test_query_response_source_url_passed_through_when_present(client):
+    api_main._pipeline["graph"] = MagicMock()
+    fake_state = {
+        "answer": "You may carry 7kg.",
+        "confidence": 0.8,
+        "retrieved_chunks": [
+            {
+                "score": 0.91,
+                "metadata": {
+                    "title": "Carry-On Baggage Policy", "category": "baggage",
+                    "source_doc_id": "BAG-001", "chunk_index": 2,
+                    "source_url": "https://example.com/baggage-policy",
+                },
+            },
+            {
+                "score": 0.80,
+                "metadata": {
+                    "title": "Bundled Policy", "category": "baggage",
+                    "source_doc_id": "BAG-002", "chunk_index": 0,
+                },
+            },
+        ],
+    }
+    with patch("src.api.main.run_agent_for_tenant", return_value=fake_state):
+        resp = client.post(
+            "/v1/query", json={"query": "baggage allowance?"},
+            headers={"X-API-Key": "indigo-secret-key"},
+        )
+    sources = resp.json()["sources"]
+    assert sources[0]["source_url"] == "https://example.com/baggage-policy"
+    assert sources[1]["source_url"] is None
+
+
 def test_spicejet_key_cannot_scope_to_indigo(client):
     """A valid key always resolves to its own tenant's airline, never a
     caller-requested one — the request body has no airline field at all."""

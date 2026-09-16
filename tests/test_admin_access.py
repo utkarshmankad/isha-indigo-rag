@@ -60,6 +60,27 @@ def test_widget_contains_no_privileged_key():
     assert '/v1/public/query' in widget
 
 
+def test_widget_sends_history_and_renders_clickable_citations():
+    widget=(Path(__file__).resolve().parents[1]/'static/widget.html').read_text()
+    assert 'history' in widget
+    assert 'sessionStorage' in widget  # per-tab only, never localStorage/cross-session
+    assert 'source_url' in widget
+    assert 'target = "_blank"' in widget or "target = '_blank'" in widget
+
+
+def test_widget_never_sets_href_without_scheme_check():
+    """Regression: source_url is tenant-controlled and rendered as <a href>
+    — the widget must re-validate the scheme itself (defense in depth),
+    never trust the API response alone, or a javascript:/data: URL that
+    somehow reaches it executes on click."""
+    widget=(Path(__file__).resolve().parents[1]/'static/widget.html').read_text()
+    assert 'isSafeUrl' in widget
+    assert 'https?:' in widget
+    href_line = next(l for l in widget.splitlines() if 'a.href' in l)
+    # a.href must be inside the isSafeUrl-guarded branch, not unconditional
+    assert widget.index('isSafeUrl') < widget.index(href_line)
+
+
 @pytest.mark.parametrize('next_scope',[('all',None),('indigo',None),('spicejet','spicejet')])
 def test_private_chat_is_cleared_when_view_or_auth_changes(next_scope):
     from src.security.session_scope import reset_chat_scope
