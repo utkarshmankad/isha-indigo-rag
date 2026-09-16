@@ -300,10 +300,18 @@ with st.sidebar:
                            f"`SELFSERVE-{admin_tenant.airline.upper()}-`) can be updated or deleted here.")
                 ud_doc_id = st.text_input("Document ID", key="update_delete_doc_id")
                 if ud_doc_id and st.button("Show version history", key="show_history"):
-                    versions = pipeline["document_store"].list_versions(ud_doc_id)
-                    if not versions:
+                    from src.ingestion.self_serve import get_version_history_for_tenant
+
+                    try:
+                        versions = get_version_history_for_tenant(
+                            admin_tenant, ud_doc_id, pipeline["document_store"],
+                        )
+                    except OwnershipError as e:
+                        versions = None
+                        st.error(f"❌ {e}")
+                    if versions is not None and not versions:
                         st.caption("No canonical record found for this doc_id.")
-                    for v in versions:
+                    for v in (versions or []):
                         st.caption(
                             f"v{v['version']} — {v['status']} — updated {v['updated_at']} "
                             f"by {v['uploaded_by']}"

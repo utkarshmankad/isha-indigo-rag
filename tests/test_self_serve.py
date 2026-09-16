@@ -8,6 +8,7 @@ from src.ingestion.self_serve import (
     UploadValidationError,
     approve_document_for_tenant,
     delete_document_for_tenant,
+    get_version_history_for_tenant,
     ingest_document_for_tenant,
     reject_document_for_tenant,
     update_document_for_tenant,
@@ -225,6 +226,26 @@ def test_reject_document_sets_status_rejected():
     reject_document_for_tenant(TENANT, doc_id, manager)
 
     manager.set_status.assert_called_once_with(doc_id, "rejected")
+
+
+def test_get_version_history_requires_ownership():
+    """Regression: version history includes the document's full original
+    text — must never be readable across tenants, not just unwritable."""
+    doc_store = MagicMock()
+    with pytest.raises(OwnershipError):
+        get_version_history_for_tenant(TENANT, "SELFSERVE-SPICEJET-other-doc-123", doc_store)
+    doc_store.list_versions.assert_not_called()
+
+
+def test_get_version_history_returns_versions_for_owned_doc():
+    doc_store = MagicMock()
+    doc_store.list_versions.return_value = [{"version": 1}]
+    doc_id = "SELFSERVE-INDIGO-old-title-123"
+
+    result = get_version_history_for_tenant(TENANT, doc_id, doc_store)
+
+    assert result == [{"version": 1}]
+    doc_store.list_versions.assert_called_once_with(doc_id)
 
 
 def test_delete_document_requires_ownership():

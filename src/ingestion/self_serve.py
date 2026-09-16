@@ -222,6 +222,17 @@ def delete_document_for_tenant(tenant, doc_id: str, index_manager: IndexManager)
     )
 
 
+def get_version_history_for_tenant(tenant, doc_id: str, document_store: DocumentStore) -> list[dict]:
+    """Version history, including full `original_content`, for one of this
+    tenant's own self-serve documents. Raises OwnershipError if `doc_id`
+    was not this tenant's own self-serve upload — this record contains the
+    document's full text and provenance, so unlike a doc_id-only operation,
+    leaking it to another tenant is a content-disclosure issue, not just an
+    unauthorized-write issue."""
+    _require_owned_doc_id(tenant, doc_id)
+    return document_store.list_versions(doc_id)
+
+
 def approve_document_for_tenant(tenant, doc_id: str, index_manager: IndexManager) -> None:
     """Make a pending self-serve document searchable. Raises OwnershipError
     if `doc_id` was not this tenant's own self-serve upload."""
