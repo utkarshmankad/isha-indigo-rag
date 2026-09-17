@@ -41,13 +41,22 @@ load_dotenv()
 
 
 def run_pipeline_over_hindi_set() -> list[dict]:
-    from data.indigo_documents import DOCUMENTS
+    # Full bundled corpus, matching src/api/main.py's init_app_state and
+    # scripts/evaluate.py — see docs/EVAL-CORPUS-ALIGNMENT.md. HINDI_HINGLISH_QA
+    # is IndiGo-scoped today, so this had no visible effect on this script's
+    # own results yet, but keeps every eval entrypoint consistent with what's
+    # actually deployed rather than each one picking its own subset.
+    from data.air_india_documents import DOCUMENTS as AI_DOCS
+    from data.dgca_documents import DOCUMENTS as DGCA_DOCS
+    from data.indigo_documents import DOCUMENTS as INDIGO_DOCS
+    from data.spicejet_documents import DOCUMENTS as SJ_DOCS
     from eval.hindi_hinglish_qa import HINDI_HINGLISH_QA
     from src.agent.graph import build_graph, run_agent
     from src.embedding.vector_store import QdrantVectorStore
     from src.ingestion.chunker import ingest_all
 
-    chunks = ingest_all(DOCUMENTS)
+    all_docs = INDIGO_DOCS + AI_DOCS + SJ_DOCS + DGCA_DOCS
+    chunks = ingest_all(all_docs)
     store = QdrantVectorStore()
     graph = build_graph(chunks, store)
 

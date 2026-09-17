@@ -73,13 +73,25 @@ GATE_THRESHOLDS = {
 
 
 def run_pipeline_over_golden_set():
-    from data.indigo_documents import DOCUMENTS
+    # Full bundled corpus, matching src/api/main.py's init_app_state and
+    # app.py's init_pipeline exactly — GOLDEN_QA includes SpiceJet and DGCA
+    # queries alongside IndiGo ones. Building BM25 from IndiGo docs alone
+    # (as this used to do) meant hybrid search's lexical side had no
+    # candidates at all for non-IndiGo queries during eval, silently
+    # mismatching what's actually deployed to Qdrant (which does hold every
+    # airline's chunks) and understating real retrieval quality for those
+    # queries. See docs/EVAL-CORPUS-ALIGNMENT.md.
+    from data.air_india_documents import DOCUMENTS as AI_DOCS
+    from data.dgca_documents import DOCUMENTS as DGCA_DOCS
+    from data.indigo_documents import DOCUMENTS as INDIGO_DOCS
+    from data.spicejet_documents import DOCUMENTS as SJ_DOCS
     from src.agent.graph import build_graph, run_agent
     from src.embedding.vector_store import QdrantVectorStore
     from src.ingestion.chunker import ingest_all
     from eval.golden_qa import GOLDEN_QA
 
-    chunks = ingest_all(DOCUMENTS)
+    all_docs = INDIGO_DOCS + AI_DOCS + SJ_DOCS + DGCA_DOCS
+    chunks = ingest_all(all_docs)
     store = QdrantVectorStore()
     graph = build_graph(chunks, store)
 
