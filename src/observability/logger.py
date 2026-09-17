@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from src.observability.logging_config import get_logger
+from src.observability.redaction import redact_pii
 
 logger = get_logger("observability.query_log")
 
@@ -43,7 +44,7 @@ def log_query(
     record = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "correlation_id": correlation_id,
-        "query": query,
+        "query": redact_pii(query),
         "selected_tools": selected_tools,
         "confidence": round(confidence, 2),
         "latency_ms": int(latency_ms),
