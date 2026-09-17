@@ -175,6 +175,31 @@ def test_admin_metrics_scoped_to_own_tenant(client):
     assert body["query_count"] == 1  # not 2 — spicejet's entry must not leak in
 
 
+def test_admin_metrics_separates_refused_fallback_and_likely_false_answers(client, tmp_path, monkeypatch):
+    import src.feedback.collector as feedback_collector
+
+    monkeypatch.setattr(feedback_collector, "FEEDBACK_FILE", str(tmp_path / "feedback.jsonl"))
+    monkeypatch.setattr(feedback_collector, "_lookup_airline", lambda correlation_id: "indigo")
+    feedback_collector.record_feedback("c-answered-wrong", "down")
+
+    fake_logs = [
+        {"airline": "indigo", "confidence": 0.9, "refused": False, "fallback_triggered": False,
+         "correlation_id": "c-answered-wrong"},
+        {"airline": "indigo", "confidence": 0.9, "refused": False, "fallback_triggered": False,
+         "correlation_id": "c-answered-fine"},
+        {"airline": "indigo", "confidence": 0.2, "refused": True, "fallback_triggered": True,
+         "correlation_id": "c-refused"},
+    ]
+    with patch("src.observability.admin_metrics.read_logs", return_value=fake_logs):
+        resp = client.get("/v1/admin/metrics", headers={"X-Admin-Key": "indigo-admin-key"})
+
+    body = resp.json()
+    assert body["refused_count"] == 1
+    assert body["fallback_only_count"] == 0
+    assert body["likely_false_answer_count"] == 1
+    assert body["likely_false_answer_rate"] == 0.5  # 1 of 2 non-refused queries
+
+
 def test_admin_escalations_requires_valid_key(client):
     resp = client.get("/v1/admin/escalations", headers={"X-API-Key": "wrong-key"})
     assert resp.status_code == 401

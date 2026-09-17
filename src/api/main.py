@@ -182,9 +182,19 @@ class AdminMetricsResponse(BaseModel):
     airline: str
     query_count: int
     unanswered_count: int
-    unanswered_rate: float
+    unanswered_rate: float = Field(description="Refused + fallback-only combined — see refused_rate/fallback_only_rate to tell them apart")
     avg_confidence: float
     estimated_cost_usd: float
+    refused_count: int = Field(description="Confidence-gated hard refusals — see REFUSAL_FLOOR in src/agent/graph.py")
+    refused_rate: float
+    fallback_only_count: int = Field(description="Search was expanded/degraded but an answer was still given (not refused)")
+    fallback_only_rate: float
+    likely_false_answer_count: int = Field(
+        description="Non-refused answers with a thumbs-down rating — a proxy signal, not a verified false-answer count",
+    )
+    likely_false_answer_rate: float | None = Field(
+        description="None when there are no non-refused queries to rate at all, distinct from a measured 0.0",
+    )
 
 
 def get_admin_tenant(x_admin_key: str | None = Header(None, alias="X-Admin-Key")) -> TenantConfig:
@@ -211,6 +221,12 @@ def admin_metrics(tenant: TenantConfig = Depends(get_admin_tenant)) -> AdminMetr
         unanswered_rate=m.unanswered_rate,
         avg_confidence=m.avg_confidence,
         estimated_cost_usd=m.estimated_cost_usd,
+        refused_count=m.refused_count,
+        refused_rate=m.refused_rate,
+        fallback_only_count=m.fallback_only_count,
+        fallback_only_rate=m.fallback_only_rate,
+        likely_false_answer_count=m.likely_false_answer_count,
+        likely_false_answer_rate=m.likely_false_answer_rate,
     )
 
 
