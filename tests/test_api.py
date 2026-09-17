@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import src.api.main as api_main
+from src.api import rate_limiter
 from src.tenancy.registry import TenantConfig
 
 
@@ -18,10 +19,9 @@ def _fixed_registry(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _reset_rate_limit_state():
-    api_main._query_times.clear()
+def _reset_rate_limit_state(tmp_path, monkeypatch):
+    monkeypatch.setattr(rate_limiter, "RATE_LIMIT_DB", str(tmp_path / "rate_limits.sqlite"))
     yield
-    api_main._query_times.clear()
 
 
 @pytest.fixture

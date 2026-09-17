@@ -10,7 +10,6 @@ Run with: uv run uvicorn src.api.main:app --port 8080
 """
 import time
 import uuid
-from collections import defaultdict
 from contextlib import asynccontextmanager
 from threading import Lock
 
@@ -23,6 +22,7 @@ from src.observability.health import check_openai_key, check_qdrant
 from pydantic import BaseModel, Field
 
 from src.agent.graph import run_agent, run_agent_for_tenant
+from src.api import rate_limiter
 from src.billing.stripe_usage import record_query_usage
 from src.escalation.queue import (
     VALID_CONTACT_CHANNELS,
@@ -61,8 +61,6 @@ app.add_middleware(
 )
 
 _QPM_LIMIT = 30
-_rate_lock = Lock()
-_query_times: dict[str, list[float]] = defaultdict(list)
 
 _pipeline: dict = {}
 _init_lock = Lock()
@@ -147,13 +145,13 @@ class QueryResponse(BaseModel):
 
 
 def _check_rate_limit(tenant_id: str) -> None:
-    now = time.time()
-    with _rate_lock:
-        recent = [t for t in _query_times[tenant_id] if t > now - 60]
-        if len(recent) >= _QPM_LIMIT:
-            raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again shortly.")
-        recent.append(now)
-        _query_times[tenant_id] = recent
+    if not rate_limiter.check_and_record(tenant_id, _QPM_LIMIT):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again shortly.")
+
+
+def reset_rate_limits() -> None:
+    """Test-only: wipe all recorded rate-limit state."""
+    rate_limiter.reset()
 
 
 def get_tenant(x_api_key: str = Header(..., alias="X-API-Key")) -> TenantConfig:
