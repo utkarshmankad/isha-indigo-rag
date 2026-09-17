@@ -1,6 +1,13 @@
 import math
 import pytest
-from src.embedding.embedder import EMBEDDING_DIM, cosine_similarity, mock_embed
+from src.embedding.embedder import (
+    EMBEDDING_DIM,
+    EmbeddingConfigurationError,
+    cosine_similarity,
+    embed_batch,
+    mock_embed,
+)
+import src.embedding.embedder as embedder
 
 
 def test_mock_embed_correct_dimension():
@@ -40,3 +47,35 @@ def test_cosine_similarity_zero_vector():
 
 def test_cosine_similarity_orthogonal():
     assert abs(cosine_similarity([1.0, 0.0], [0.0, 1.0])) < 1e-9
+
+
+def test_embed_batch_rejects_missing_key_without_override(monkeypatch):
+    """Regression: a missing OPENAI_API_KEY in a real deployment used to
+    silently fall back to semantically-meaningless mock embeddings —
+    every search would run without error but return nonsense."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ISHA_ALLOW_MOCK_EMBEDDINGS", raising=False)
+    monkeypatch.setattr(embedder, "_path_announced", False)
+
+    with pytest.raises(EmbeddingConfigurationError):
+        embed_batch(["baggage allowance"])
+
+
+@pytest.mark.parametrize("override_value", ["true", "1", "yes", "TRUE"])
+def test_embed_batch_allows_mock_with_explicit_override(monkeypatch, override_value):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("ISHA_ALLOW_MOCK_EMBEDDINGS", override_value)
+    monkeypatch.setattr(embedder, "_path_announced", False)
+
+    result = embed_batch(["baggage allowance"])
+
+    assert result == [mock_embed("baggage allowance")]
+
+
+def test_embed_batch_override_false_still_rejects(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("ISHA_ALLOW_MOCK_EMBEDDINGS", "false")
+    monkeypatch.setattr(embedder, "_path_announced", False)
+
+    with pytest.raises(EmbeddingConfigurationError):
+        embed_batch(["baggage allowance"])

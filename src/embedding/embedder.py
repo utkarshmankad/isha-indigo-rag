@@ -16,6 +16,10 @@ RETRY_DELAY_SECONDS = 2
 _path_announced = False
 
 
+class EmbeddingConfigurationError(RuntimeError):
+    pass
+
+
 def mock_embed(text: str, dim: int = EMBEDDING_DIM) -> list[float]:
     seed = int(hashlib.sha256(text.encode()).hexdigest(), 16)
     vec = []
@@ -30,15 +34,33 @@ def mock_embed(text: str, dim: int = EMBEDDING_DIM) -> list[float]:
 
 
 def embed_batch(texts: list[str]) -> list[list[float]]:
+    """Real embeddings by default. If OPENAI_API_KEY is missing, this
+    raises EmbeddingConfigurationError rather than silently substituting
+    mock (deterministic-hash, semantically meaningless) vectors — a
+    missing key in a real deployment previously produced a pipeline that
+    ran without error but returned nonsense for every search, with only a
+    one-time log line to notice by. Set ISHA_ALLOW_MOCK_EMBEDDINGS=true to
+    opt into mock embeddings explicitly, for local development only (e.g.
+    exercising the pipeline without incurring OpenAI cost) — never in a
+    real deployment."""
     global _path_announced
 
     api_key = os.environ.get("OPENAI_API_KEY")
 
     if not api_key:
-        if not _path_announced:
-            logger.warning("no OPENAI_API_KEY, using mock embeddings")
-            _path_announced = True
-        return [mock_embed(t) for t in texts]
+        if os.environ.get("ISHA_ALLOW_MOCK_EMBEDDINGS", "").lower() in ("1", "true", "yes"):
+            if not _path_announced:
+                logger.warning(
+                    "no OPENAI_API_KEY, using mock embeddings (ISHA_ALLOW_MOCK_EMBEDDINGS is set — "
+                    "do not use in production)",
+                )
+                _path_announced = True
+            return [mock_embed(t) for t in texts]
+        raise EmbeddingConfigurationError(
+            "OPENAI_API_KEY is not set. Real embeddings are required. To run locally without a key "
+            "(e.g. for offline development), set ISHA_ALLOW_MOCK_EMBEDDINGS=true explicitly — mock "
+            "embeddings are semantically meaningless and must never be used in production."
+        )
 
     if not _path_announced:
         logger.info("using OpenAI embeddings", model=EMBEDDING_MODEL)
