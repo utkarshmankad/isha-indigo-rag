@@ -177,12 +177,26 @@ with st.sidebar:
 
                 metrics = compute_tenant_metrics(admin_tenant.airline)
                 st.metric("Total queries logged", metrics.query_count)
-                st.metric("Unanswered rate", f"{metrics.unanswered_rate:.1%}")
                 st.metric("Avg retrieval similarity", f"{metrics.avg_confidence:.2f}")
                 st.metric("Est. cost (flat estimate)", f"${metrics.estimated_cost_usd:.4f}")
                 st.caption(
                     "Cost is a flat per-query estimate, not measured OpenAI spend — "
                     "no token-usage tracking wired up yet."
+                )
+                st.divider()
+                outcome_cols = st.columns(3)
+                outcome_cols[0].metric("Refused", f"{metrics.refused_rate:.1%}")
+                outcome_cols[1].metric("Fallback-only", f"{metrics.fallback_only_rate:.1%}")
+                outcome_cols[2].metric(
+                    "Likely false answers",
+                    f"{metrics.likely_false_answer_rate:.1%}" if metrics.likely_false_answer_rate is not None else "n/a",
+                )
+                st.caption(
+                    "Refused = confidence-gated decline (no answer given). Fallback-only = search was "
+                    "expanded/degraded but an answer was still given. Likely false answers = thumbs-down "
+                    "feedback on a NON-refused answer, as a share of non-refused answers — a proxy signal "
+                    "(a thumbs-down can mean wrong, unhelpful, or just frustration), not a verified false-"
+                    "answer count. These used to be combined into one 'unanswered rate' number."
                 )
 
             with st.expander("👍 User feedback"):
