@@ -7,6 +7,7 @@ from typing import TypedDict
 from dotenv import load_dotenv
 from langgraph.graph import END, StateGraph
 
+from src.agent.guided_questions import build_exception_guidance
 from src.documents.document_store import DocumentStore
 from src.embedding.embedder import embed_batch
 from src.embedding.vector_store import QdrantVectorStore
@@ -361,6 +362,13 @@ def build_graph(chunks: list[dict], vector_store: QdrantVectorStore):
             prompt = engine.build_prompt(query, context, airline=airline, history=state.get("history"))
             if dgca_query:
                 prompt = prompt + DGCA_INSTRUCTION
+            hist_snippet = _last_user_turn(state.get("history", []))
+            exception_guidance = build_exception_guidance(
+                state["selected_tools"], airline,
+                f"{hist_snippet} {query}".strip() if hist_snippet else query,
+            )
+            if exception_guidance:
+                prompt = prompt + exception_guidance
         except Exception:
             logger.error("prompt construction failed", correlation_id=cid, exc_info=True)
             return {"context": "", "answer": _fallback_answer(airline), "stage_error": "generation"}
