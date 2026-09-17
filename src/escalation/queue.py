@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from src.observability.logging_config import get_logger
+from src.observability.redaction import redact_pii
 
 logger = get_logger("escalation.queue")
 
@@ -52,7 +53,7 @@ def enqueue_escalation(
         "escalation_id": escalation_id,
         "correlation_id": correlation_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "query": query,
+        "query": redact_pii(query),
         "airline": airline,
         "confidence": round(confidence, 4),
         "status": "pending",

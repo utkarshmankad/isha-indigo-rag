@@ -22,6 +22,16 @@ def test_enqueue_and_list_pending(tmp_path, monkeypatch):
     assert pending[0]["confidence"] == 0.2
 
 
+def test_enqueue_escalation_redacts_pii_in_query(tmp_path, monkeypatch):
+    monkeypatch.setattr(escalation_queue, "ESCALATION_FILE", str(tmp_path / "escalations.jsonl"))
+
+    enqueue_escalation("email me at passenger@example.com about this", "indigo", 0.2, "corr-1")
+
+    pending = list_pending_escalations("indigo")
+    assert "passenger@example.com" not in pending[0]["query"]
+    assert "[REDACTED-EMAIL]" in pending[0]["query"]
+
+
 def test_list_pending_scoped_to_airline(tmp_path, monkeypatch):
     monkeypatch.setattr(escalation_queue, "ESCALATION_FILE", str(tmp_path / "escalations.jsonl"))
 
