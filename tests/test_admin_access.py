@@ -4,15 +4,16 @@ import pytest
 from fastapi.testclient import TestClient
 import src.api.main as api
 import src.tenancy.registry as registry
+from src.api import rate_limiter
 
 
 @pytest.fixture(autouse=True)
-def isolated(monkeypatch):
+def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(registry,'TENANTS',{
         'indigo':registry.TenantConfig('indigo','indigo','IndiGo','chat-key','admin-key'),
         'spicejet':registry.TenantConfig('spicejet','spicejet','SpiceJet','other-chat','other-admin')})
     monkeypatch.setattr(api,'_pipeline',{'graph':MagicMock()})
-    api._query_times.clear()
+    monkeypatch.setattr(rate_limiter, 'RATE_LIMIT_DB', str(tmp_path / 'rate_limits.sqlite'))
 
 
 def test_chat_key_cannot_access_admin_even_in_admin_header():
