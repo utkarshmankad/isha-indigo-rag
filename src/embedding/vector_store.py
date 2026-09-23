@@ -4,6 +4,8 @@ import uuid
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
+    IsEmptyCondition,
+    PayloadField,
     FieldCondition,
     Filter,
     FilterSelector,
@@ -20,11 +22,8 @@ from src.observability.logging_config import get_logger
 logger = get_logger("embedding.vector_store")
 
 _BATCH_SIZE = 100
-# Bundled corpus chunks have no "status" field at all and are treated as
-# always-approved. Self-serve chunks get one via chunk_document's doc dict
-# and must clear approval before they're searchable — see
-# docs/INDEX-CONSISTENCY.md.
-_UNSEARCHABLE_STATUSES = ["pending", "rejected", "superseded"]
+# Approval is explicit for private uploads; only published legacy corpus
+# points may omit status. Unknown status values are never searchable.
 
 
 class QdrantVectorStore:
@@ -147,8 +146,16 @@ class QdrantVectorStore:
             if owned:
                 allowed.append(FieldCondition(key="airline", match=MatchAny(any=owned)))
             must.append(Filter(should=allowed))
-        must_not = [FieldCondition(key="status", match=MatchAny(any=_UNSEARCHABLE_STATUSES))]
-        qdrant_filter = Filter(must=must, must_not=must_not)
+        # Only explicit approval can publish private uploads. Legacy bundled
+        # public policies have no status; unknown status values fail closed.
+        must.append(Filter(should=[
+            FieldCondition(key="status", match=MatchValue(value="approved")),
+            Filter(must=[
+                IsEmptyCondition(is_empty=PayloadField(key="status")),
+                FieldCondition(key="visibility", match=MatchValue(value="public")),
+            ]),
+        ]))
+        qdrant_filter = Filter(must=must)
 
         response = self.client.query_points(
             collection_name=self.collection_name,
@@ -224,6 +231,26 @@ class QdrantVectorStore:
             f"[vector_store] Recreated collection '{self.collection_name}' "
             f"(dim={EMBEDDING_DIM})."
         )
+
+    def chunks_for_document(self, doc_id: str) -> list[dict]:
+        """Read the durable dense version for update cleanup and compensation."""
+        chunks = []
+        offset = None
+        while True:
+            points, offset = self.client.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=Filter(must=[FieldCondition(key="source_doc_id", match=MatchValue(value=doc_id))]),
+                with_payload=True, with_vectors=True, limit=100, offset=offset,
+            )
+            for point in points:
+                payload = point.payload or {}
+                chunks.append({
+                    "chunk_id": payload["chunk_id"], "doc_id": doc_id,
+                    "text": payload["text"], "embedding": point.vector,
+                    "metadata": {k: v for k, v in payload.items() if k not in ("text", "chunk_id")},
+                })
+            if offset is None:
+                return chunks
 
     def delete_by_doc_id(self, doc_id: str) -> None:
         self.client.delete(

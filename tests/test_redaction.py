@@ -41,3 +41,20 @@ def test_empty_string_is_noop():
 
 def test_none_like_falsy_is_returned_unchanged():
     assert redact_pii("") == ""
+
+
+def test_exception_traceback_is_redacted_before_json_output():
+    import json
+    import logging
+    import sys
+    from src.observability.logging_config import JsonFormatter, RedactionFilter
+    try:
+        raise RuntimeError('passenger@example.com sk-sensitive_test_key123456 Bearer token123456')
+    except RuntimeError:
+        record = logging.LogRecord('test', logging.ERROR, __file__, 1, 'request failed', (), sys.exc_info())
+    RedactionFilter().filter(record)
+    output = JsonFormatter().format(record)
+    assert 'passenger@example.com' not in output
+    assert 'sk-sensitive_test_key123456' not in output
+    assert 'token123456' not in output
+    assert 'RuntimeError' in json.loads(output)['exception']

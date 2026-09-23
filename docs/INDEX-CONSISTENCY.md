@@ -8,25 +8,23 @@ entered the in-process BM25 keyword index, so exact-keyword search silently
 missed them. `IndexManager` now also writes a canonical record
 (`src/documents/document_store.py`) — see `docs/CANONICAL-DOCUMENT-STORE.md`.
 
-## What IndexManager guarantees
+## Write ordering and compensation
 
 Within a single running process, add/update/delete each touch three things —
-the canonical record, the dense index, the lexical index — landing in all of
-them or none:
+the canonical record, the dense index, the lexical index — with best-effort compensation when a subsequent write fails:
 
 - **Add**: canonical record first (durable, cheap, idempotent), then the
   dense write, then BM25. If the BM25 rebuild fails, both the dense write
   and the canonical record are rolled back and `IndexConsistencyError` is
   raised.
-- **Update**: canonical record overwritten first; then new content is
-  written to the dense index (as additional points, alongside the old
-  ones); then swapped into BM25 in a single rebuild. If that BM25 step
-  fails, the new dense points are deleted and the previous canonical record
-  is restored — the original document is left fully intact. Only after BM25
-  commits to the new content are the superseded old dense points deleted —
-  best-effort; if that cleanup step itself fails, it's logged, not raised,
-  because the canonical record, BM25 and the new dense points are already
-  correctly committed.
+- **Update**: snapshot the previous dense chunks from Qdrant (including after
+  a process restart), then write the record, dense chunks and BM25. Stable
+  chunk IDs overwrite existing points. Cleanup deletes only obsolete IDs,
+  never replacement IDs. If dense or BM25 publication fails, restore the
+  dense snapshot and previous record, removing new-only points. BM25 builds
+  its replacement before publishing it, so a failed build preserves its
+  previous corpus. Compensating writes can themselves fail during an outage;
+  this is not an atomic transaction.
 - **Delete**: BM25 removal happens first (cheap, in-memory). If the
   following dense delete fails, the BM25 entries are restored and the
   canonical record is left untouched. Only once the dense delete succeeds is
@@ -60,13 +58,12 @@ in-place payload patch — no vectors touched), and on the matching in-memory
 BM25 chunks, all independently and idempotently (safe to retry; no
 compensating rollback needed since each patch alone is harmless).
 
-Both `hybrid_search`'s BM25 path and `QdrantVectorStore.query`'s dense path
-then exclude any chunk whose `status` is `pending`, `rejected`, or
-`superseded`. Bundled corpus chunks have no `status` field at all and are
-therefore always searchable — the exclusion only ever applies to self-serve
-chunks that haven't cleared approval yet. See
-`docs/CANONICAL-DOCUMENT-STORE.md` for the full approval/dedup/supersession
-workflow.
+Both retrieval paths require `status=approved`. For compatibility, published
+legacy corpus points (`visibility=public`) with absent/null status remain
+searchable. Private uploads with absent/null status and all unknown status
+values are excluded. Existing private uploads without status require explicit
+admin approval before they become searchable. Invalid status transitions are
+rejected before writes.
 
 ## Ownership checks
 

@@ -193,3 +193,61 @@ def test_set_status_works_without_document_store():
     manager.set_status("doc_a", "rejected")
 
     store.set_status_by_doc_id.assert_called_once_with("doc_a", "rejected", superseded_by=None)
+
+
+def test_update_preserves_reused_chunk_ids_and_removes_durable_stale_chunks():
+    bm25 = _bm25_with_base()
+    store = MagicMock()
+    # Include a persisted chunk absent from this process's BM25 (after restart).
+    store.chunks_for_document.return_value = [BASE_CHUNKS[0], {**BASE_CHUNKS[0], 'chunk_id': 'old_extra'}]
+    manager = IndexManager(bm25, store)
+    replacement = {**BASE_CHUNKS[0], 'text': 'Replacement pending policy'}
+    manager.update_document('doc_a', _record('doc_a'), [replacement])
+    store.delete_by_chunk_ids.assert_called_once_with(['old_extra'])
+    assert bm25.chunks_for_document('doc_a')[0]['text'] == 'Replacement pending policy'
+
+
+def test_update_restores_overwritten_dense_chunks_when_lexical_write_fails():
+    bm25 = _bm25_with_base()
+    bm25.replace_document = MagicMock(side_effect=RuntimeError('index failure'))
+    store = MagicMock()
+    snapshot = [{**BASE_CHUNKS[0], 'embedding': [1.0, 0.0]}]
+    store.chunks_for_document.return_value = snapshot
+    manager = IndexManager(bm25, store)
+    with pytest.raises(IndexConsistencyError):
+        manager.update_document('doc_a', _record('doc_a'), [{**snapshot[0], 'text': 'new content'}])
+    store.delete_by_chunk_ids.assert_called_once_with([])
+    assert store.upsert.call_args.args[0] == snapshot
+
+
+def test_invalid_status_rejected_before_any_write():
+    bm25 = _bm25_with_base()
+    store = MagicMock()
+    manager = IndexManager(bm25, store)
+    with pytest.raises(ValueError):
+        manager.set_status('doc_a', 'aproved')
+    store.set_status_by_doc_id.assert_not_called()
+
+
+def test_real_dense_update_and_failure_restore(monkeypatch):
+    from qdrant_client import QdrantClient
+    from qdrant_client.models import VectorParams, Distance
+    from src.embedding.vector_store import QdrantVectorStore
+    store = QdrantVectorStore.__new__(QdrantVectorStore)
+    store.client = QdrantClient(':memory:')
+    store.collection_name = 'updates'
+    store.client.create_collection('updates', vectors_config=VectorParams(size=2, distance=Distance.COSINE))
+    old = {**BASE_CHUNKS[0], 'embedding': [1., 0.]}
+    store.upsert([old])
+    bm25 = _bm25_with_base()
+    manager = IndexManager(bm25, store)
+    new = {**old, 'text': 'Replacement baggage rule', 'embedding': [0., 1.]}
+    manager.update_document('doc_a', _record('doc_a'), [new])
+    assert store.chunks_for_document('doc_a')[0]['text'] == new['text']
+    monkeypatch.setattr(bm25, 'replace_document', MagicMock(side_effect=RuntimeError('build failed')))
+    with pytest.raises(IndexConsistencyError):
+        manager.update_document('doc_a', _record('doc_a'), [old])
+    restored = store.chunks_for_document('doc_a')[0]
+    assert restored['text'] == new['text']
+    assert restored['embedding'] == new['embedding']
+    store.client.close()
