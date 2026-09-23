@@ -251,3 +251,17 @@ def test_real_dense_update_and_failure_restore(monkeypatch):
     assert restored['text'] == new['text']
     assert restored['embedding'] == new['embedding']
     store.client.close()
+
+
+def test_obsolete_cleanup_failure_aborts_update_instead_of_leaving_stale_policy():
+    bm25 = _bm25_with_base()
+    store = MagicMock()
+    snapshot = [{**BASE_CHUNKS[0], 'embedding': [1., 0.]}]
+    store.chunks_for_document.return_value = snapshot
+    store.delete_by_chunk_ids.side_effect = [RuntimeError('cleanup failed'), None]
+    manager = IndexManager(bm25, store)
+    replacement = {**snapshot[0], 'chunk_id': 'replacement', 'text': 'Changed baggage policy'}
+    with pytest.raises(IndexConsistencyError):
+        manager.update_document('doc_a', _record('doc_a'), [replacement])
+    assert store.upsert.call_args.args[0] == snapshot
+    assert bm25.chunks_for_document('doc_a')[0]['text'] == BASE_CHUNKS[0]['text']

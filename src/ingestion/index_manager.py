@@ -65,12 +65,12 @@ class IndexManager:
                 ) from None
 
     def update_document(self, doc_id: str, record: dict, chunks: list[dict]) -> None:
-        """Replace `doc_id` everywhere. The canonical record is overwritten
-        first; if anything after that fails, the previous record is
-        restored. New dense points are written before BM25 is swapped and
-        before old dense points are removed, so a failure at any step leaves
-        either the old document fully intact or the new document fully
-        committed — never a mix."""
+        """Replace a document with compensation on failed publication.
+
+        Dense snapshots preserve overwritten vectors and find stale chunks
+        after restart. Cleanup must succeed before publishing the new BM25
+        corpus. Crashes or failed compensation still require reconciliation.
+        """
         if not chunks:
             return
         with self._lock:
@@ -81,11 +81,15 @@ class IndexManager:
 
             if self._documents:
                 self._documents.put(record)
+            retained_ids = {c["chunk_id"] for c in chunks}
+            obsolete_ids = [cid for cid in old_chunk_ids if cid not in retained_ids]
             try:
                 self._store.upsert(chunks)
+                if obsolete_ids:
+                    self._store.delete_by_chunk_ids(obsolete_ids)
                 self._bm25.replace_document(doc_id, chunks)
             except Exception:
-                logger.error("bm25 replace failed, rolling back new dense write and record", doc_id=doc_id)
+                logger.error("document publication failed, restoring prior dense version and record", doc_id=doc_id)
                 new_only = [c["chunk_id"] for c in chunks if c["chunk_id"] not in
                             {old["chunk_id"] for old in dense_snapshot}]
                 self._store.delete_by_chunk_ids(new_only)
@@ -96,24 +100,6 @@ class IndexManager:
                 raise IndexConsistencyError(
                     f"Failed to update '{doc_id}' for keyword search; update rolled back."
                 ) from None
-
-            # Chunk IDs are stable across content updates. Never delete IDs
-            # that the upsert has just replaced with the new pending version.
-            retained_ids = {c["chunk_id"] for c in chunks}
-            obsolete_ids = [cid for cid in old_chunk_ids if cid not in retained_ids]
-            if obsolete_ids:
-                try:
-                    self._store.delete_by_chunk_ids(obsolete_ids)
-                except Exception:
-                    # The canonical record, BM25 and the new dense points are
-                    # already committed and consistent with each other — the
-                    # update itself succeeded. Stale superseded dense points
-                    # may briefly duplicate in vector-only results until
-                    # this is retried.
-                    logger.error(
-                        "post-update cleanup of superseded dense points failed",
-                        doc_id=doc_id,
-                    )
 
     def delete_document(self, doc_id: str) -> None:
         """Remove `doc_id` from the lexical index, the dense index, and the
