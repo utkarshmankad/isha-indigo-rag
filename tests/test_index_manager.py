@@ -124,7 +124,9 @@ def test_update_document_rolls_back_new_dense_write_and_record_on_bm25_failure()
     with pytest.raises(IndexConsistencyError):
         manager.update_document("doc_a", _record("doc_a", version=2), new_chunks)
 
-    store.delete_by_chunk_ids.assert_called_once_with(["doc_a_chunk_000_v2"])
+    assert [c.args[0] for c in store.delete_by_chunk_ids.call_args_list] == [
+        ["doc_a_chunk_000"], ["doc_a_chunk_000_v2"],
+    ]
     # First put() call wrote the new record; rollback put() call restores the old one.
     assert documents.put.call_args_list[-1].args[0] == old_record
     assert bm25.chunks_for_document("doc_a")
