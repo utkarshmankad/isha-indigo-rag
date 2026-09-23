@@ -337,3 +337,15 @@ def test_delete_document_calls_index_manager_for_owned_doc():
     delete_document_for_tenant(TENANT, doc_id, manager)
 
     manager.delete_document.assert_called_once_with(doc_id)
+
+
+def test_same_title_uploads_in_same_second_have_distinct_ids():
+    from unittest.mock import MagicMock, patch
+    from src.tenancy.registry import TenantConfig
+    tenant = TenantConfig('indigo', 'indigo', 'IndiGo', 'key')
+    manager = MagicMock()
+    with patch('src.ingestion.self_serve.embed_chunks', side_effect=lambda chunks: chunks), \
+         patch('time.time', return_value=1000) as clock:
+        first = ingest_document_for_tenant(tenant, 'Policy', 'Baggage policy. ' * 30, 'baggage', manager)
+        second = ingest_document_for_tenant(tenant, 'Policy', 'Different policy. ' * 30, 'baggage', manager)
+    assert first['doc_id'] != second['doc_id']

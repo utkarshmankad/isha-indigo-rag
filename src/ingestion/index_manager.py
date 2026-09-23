@@ -16,7 +16,7 @@ replay-on-startup step is separate, larger, not-yet-authorized scope.
 """
 from threading import Lock
 
-from src.documents.document_store import DocumentStore
+from src.documents.document_store import DocumentStore, VALID_STATUSES
 from src.embedding.vector_store import QdrantVectorStore
 from src.observability.logging_config import get_logger
 from src.retrieval.hybrid_search import BM25Index
@@ -65,46 +65,41 @@ class IndexManager:
                 ) from None
 
     def update_document(self, doc_id: str, record: dict, chunks: list[dict]) -> None:
-        """Replace `doc_id` everywhere. The canonical record is overwritten
-        first; if anything after that fails, the previous record is
-        restored. New dense points are written before BM25 is swapped and
-        before old dense points are removed, so a failure at any step leaves
-        either the old document fully intact or the new document fully
-        committed — never a mix."""
+        """Replace a document with compensation on failed publication.
+
+        Dense snapshots preserve overwritten vectors and find stale chunks
+        after restart. Cleanup must succeed before publishing the new BM25
+        corpus. Crashes or failed compensation still require reconciliation.
+        """
         if not chunks:
             return
         with self._lock:
             previous_record = self._documents.get(doc_id) if self._documents else None
             old_chunks = self._bm25.chunks_for_document(doc_id)
-            old_chunk_ids = [c["chunk_id"] for c in old_chunks]
+            dense_snapshot = list(self._store.chunks_for_document(doc_id))
+            old_chunk_ids = list(dict.fromkeys(c["chunk_id"] for c in [*old_chunks, *dense_snapshot]))
 
             if self._documents:
                 self._documents.put(record)
-            self._store.upsert(chunks)
+            retained_ids = {c["chunk_id"] for c in chunks}
+            obsolete_ids = [cid for cid in old_chunk_ids if cid not in retained_ids]
             try:
+                self._store.upsert(chunks)
+                if obsolete_ids:
+                    self._store.delete_by_chunk_ids(obsolete_ids)
                 self._bm25.replace_document(doc_id, chunks)
             except Exception:
-                logger.error("bm25 replace failed, rolling back new dense write and record", doc_id=doc_id)
-                self._store.delete_by_chunk_ids([c["chunk_id"] for c in chunks])
+                logger.error("document publication failed, restoring prior dense version and record", doc_id=doc_id)
+                new_only = [c["chunk_id"] for c in chunks if c["chunk_id"] not in
+                            {old["chunk_id"] for old in dense_snapshot}]
+                self._store.delete_by_chunk_ids(new_only)
+                if dense_snapshot:
+                    self._store.upsert(dense_snapshot)
                 if self._documents and previous_record:
                     self._documents.put(previous_record)
                 raise IndexConsistencyError(
                     f"Failed to update '{doc_id}' for keyword search; update rolled back."
                 ) from None
-
-            if old_chunk_ids:
-                try:
-                    self._store.delete_by_chunk_ids(old_chunk_ids)
-                except Exception:
-                    # The canonical record, BM25 and the new dense points are
-                    # already committed and consistent with each other — the
-                    # update itself succeeded. Stale superseded dense points
-                    # may briefly duplicate in vector-only results until
-                    # this is retried.
-                    logger.error(
-                        "post-update cleanup of superseded dense points failed",
-                        doc_id=doc_id,
-                    )
 
     def delete_document(self, doc_id: str) -> None:
         """Remove `doc_id` from the lexical index, the dense index, and the
@@ -131,6 +126,8 @@ class IndexManager:
         three patches are independent and idempotent — safe to retry on
         partial failure, unlike add/update/delete there is no compensating
         rollback here."""
+        if status not in VALID_STATUSES:
+            raise ValueError("Invalid document approval status")
         with self._lock:
             for chunk in self._bm25.chunks_for_document(doc_id):
                 chunk["metadata"]["status"] = status

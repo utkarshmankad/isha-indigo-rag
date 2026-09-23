@@ -28,7 +28,8 @@ existing non-rejected/non-superseded document with identical
 `DuplicateDocumentError` unless the caller passes `force=True`.
 """
 import re
-from datetime import date, datetime, timezone
+import uuid
+from datetime import date
 
 from src.documents.document_store import DocumentStore, build_record, hash_content
 from src.embedding.embedder import embed_chunks
@@ -176,7 +177,7 @@ def ingest_document_for_tenant(
         if duplicate is not None:
             raise DuplicateDocumentError(duplicate["doc_id"])
 
-    doc_id = f"{_tenant_doc_prefix(tenant)}{_slugify(title)}-{int(datetime.now(timezone.utc).timestamp())}"
+    doc_id = f"{_tenant_doc_prefix(tenant)}{_slugify(title)}-{uuid.uuid4().hex}"
     chunks = _build_chunks(
         doc_id, title, content, category, tenant.airline,
         source_url=source_url, effective_date=effective_date, verified_date=verified_date,
